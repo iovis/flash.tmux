@@ -66,7 +66,7 @@ pub struct PaneDimensions {
 }
 
 #[derive(Clone, Copy)]
-pub enum TrimMode {
+enum TrimMode {
     Trim,
     TrimNewlines,
     None,
@@ -80,6 +80,14 @@ pub fn get_tmux_pane_id() -> Result<String> {
 pub fn capture_pane(pane_id: &str) -> Result<String> {
     tmux_output_trim(&["capture-pane", "-p", "-J", "-t", pane_id], TrimMode::None)
         .context("failed to capture pane")
+}
+
+pub fn capture_pane_window_dims() -> Option<String> {
+    tmux_output_trim(
+        &["display-message", "-p", "#{window_width},#{window_height}"],
+        TrimMode::Trim,
+    )
+    .ok()
 }
 
 pub fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
@@ -121,7 +129,7 @@ pub fn calculate_popup_position(dimensions: &PaneDimensions) -> (i32, i32, i32, 
     (dimensions.left, y, dimensions.width, dimensions.height)
 }
 
-pub fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
+fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
     let output = Command::new("tmux").args(args).output()?;
     if !output.status.success() {
         bail!("tmux command failed");
@@ -139,7 +147,7 @@ pub fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
     Ok(out)
 }
 
-pub fn tmux_run_quiet(args: &[&str]) -> bool {
+fn tmux_run_quiet(args: &[&str]) -> bool {
     Command::new("tmux")
         .args(args)
         .output()
@@ -185,17 +193,75 @@ impl Clipboard {
         }
 
         if auto_paste {
-            let _ = tmux_run_quiet(&["set-buffer", "-b", "flash-paste", "--", text]);
-            let _ = tmux_run_quiet(&["paste-buffer", "-b", "flash-paste", "-t", pane_id]);
+            let _ = write_buffer("flash-paste", text);
+            let _ = paste_buffer("flash-paste", pane_id);
             if let Some(key) = forward_key {
-                let key_name = match key {
-                    ForwardKey::Enter => "Enter",
-                    ForwardKey::Space => "Space",
-                };
-                let _ = tmux_run_quiet(&["send-keys", "-t", pane_id, key_name]);
+                let _ = send_keys(pane_id, key);
             }
         }
     }
+}
+
+pub fn write_pane_content_buffer(pane_id: &str, content: &str) -> bool {
+    let buffer = pane_content_buffer_name(pane_id);
+    write_buffer(&buffer, content)
+}
+
+pub fn read_pane_content_buffer(pane_id: &str) -> Result<String> {
+    let buffer = pane_content_buffer_name(pane_id);
+    read_buffer_raw(&buffer)
+}
+
+pub fn write_result_buffer(pane_id: &str, text: &str) -> bool {
+    let buffer = result_buffer_name(pane_id);
+    write_buffer(&buffer, text)
+}
+
+pub fn read_result_buffer(pane_id: &str) -> Result<String> {
+    let buffer = result_buffer_name(pane_id);
+    read_buffer_trimmed(&buffer)
+}
+
+pub fn delete_buffers(pane_id: &str) -> bool {
+    let result = delete_buffer(&result_buffer_name(pane_id));
+    let pane = delete_buffer(&pane_content_buffer_name(pane_id));
+    result && pane
+}
+
+fn pane_content_buffer_name(pane_id: &str) -> String {
+    format!("__flash_copy_pane_content_{pane_id}__")
+}
+
+fn result_buffer_name(pane_id: &str) -> String {
+    format!("__flash_copy_result_{pane_id}__")
+}
+
+pub fn read_buffer_raw(buffer_name: &str) -> Result<String> {
+    tmux_output_trim(&["show-buffer", "-b", buffer_name], TrimMode::None)
+}
+
+fn read_buffer_trimmed(buffer_name: &str) -> Result<String> {
+    tmux_output_trim(&["show-buffer", "-b", buffer_name], TrimMode::TrimNewlines)
+}
+
+fn write_buffer(buffer_name: &str, text: &str) -> bool {
+    tmux_run_quiet(&["set-buffer", "-b", buffer_name, "--", text])
+}
+
+fn delete_buffer(buffer_name: &str) -> bool {
+    tmux_run_quiet(&["delete-buffer", "-b", buffer_name])
+}
+
+fn paste_buffer(buffer_name: &str, pane_id: &str) -> bool {
+    tmux_run_quiet(&["paste-buffer", "-b", buffer_name, "-t", pane_id])
+}
+
+fn send_keys(pane_id: &str, key: ForwardKey) -> bool {
+    let key_name = match key {
+        ForwardKey::Enter => "Enter",
+        ForwardKey::Space => "Space",
+    };
+    tmux_run_quiet(&["send-keys", "-t", pane_id, key_name])
 }
 
 fn run_with_input(cmd: &str, args: &[&str], input: &str) -> bool {

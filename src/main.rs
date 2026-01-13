@@ -3,10 +3,7 @@ use clap::Parser;
 use std::process::Command;
 
 use flash_tmux::config::Config;
-use flash_tmux::tmux::{
-    Clipboard, ExitAction, TrimMode, calculate_popup_position, capture_pane, get_pane_dimensions,
-    get_tmux_pane_id, tmux_output_trim, tmux_run_quiet,
-};
+use flash_tmux::tmux;
 use flash_tmux::ui::InteractiveUI;
 
 #[derive(Parser, Debug)]
@@ -19,19 +16,14 @@ struct Cli {
 }
 
 fn run_parent() -> Result<()> {
-    let pane_id = get_tmux_pane_id()?;
-    let pane_content = capture_pane(&pane_id).unwrap_or_default();
-    let pane_buffer = format!("__flash_copy_pane_content_{pane_id}__");
-    let _ = tmux_run_quiet(&["set-buffer", "-b", &pane_buffer, "--", &pane_content]);
+    let pane_id = tmux::get_tmux_pane_id()?;
+    let pane_content = tmux::capture_pane(&pane_id).unwrap_or_default();
+    let _ = tmux::write_pane_content_buffer(&pane_id, &pane_content);
 
-    let (x, y, w, h) = if let Some(dimensions) = get_pane_dimensions(&pane_id) {
-        calculate_popup_position(&dimensions)
+    let (x, y, w, h) = if let Some(dimensions) = tmux::get_pane_dimensions(&pane_id) {
+        tmux::calculate_popup_position(&dimensions)
     } else {
-        let fallback = tmux_output_trim(
-            &["display-message", "-p", "#{window_width},#{window_height}"],
-            TrimMode::Trim,
-        )
-        .unwrap_or_else(|_| "160,40".to_string());
+        let fallback = tmux::capture_pane_window_dims().unwrap_or_else(|| "160,40".to_string());
         let mut parts = fallback.split(',');
         let w = parts.next().and_then(|v| v.parse().ok()).unwrap_or(160);
         let h = parts.next().and_then(|v| v.parse().ok()).unwrap_or(40);
@@ -61,21 +53,21 @@ fn run_parent() -> Result<()> {
 
     let status = Command::new("tmux").args(&args).status()?;
 
-    let result_buffer = format!("__flash_copy_result_{pane_id}__");
-    let result_text = tmux_output_trim(
-        &["show-buffer", "-b", &result_buffer],
-        TrimMode::TrimNewlines,
-    )
-    .ok()
-    .filter(|s| !s.is_empty());
+    let result_text = tmux::read_result_buffer(&pane_id)
+        .ok()
+        .filter(|s| !s.is_empty());
 
-    let action = ExitAction::from_exit_code(status.code());
+    let action = tmux::ExitAction::from_exit_code(status.code());
     if let Some(text) = result_text {
-        Clipboard::copy_and_paste(&text, &pane_id, action.should_paste(), action.forward_key());
+        tmux::Clipboard::copy_and_paste(
+            &text,
+            &pane_id,
+            action.should_paste(),
+            action.forward_key(),
+        );
     }
 
-    let _ = tmux_run_quiet(&["delete-buffer", "-b", &result_buffer]);
-    let _ = tmux_run_quiet(&["delete-buffer", "-b", &pane_buffer]);
+    let _ = tmux::delete_buffers(&pane_id);
 
     Ok(())
 }
@@ -87,10 +79,9 @@ fn run_interactive(cli: &Cli) -> Result<()> {
         .context("pane-id is required in interactive mode")?;
     let config = Config::defaults();
 
-    let pane_buffer = format!("__flash_copy_pane_content_{pane_id}__");
-    let pane_content = tmux_output_trim(&["show-buffer", "-b", &pane_buffer], TrimMode::None)
+    let pane_content = tmux::read_pane_content_buffer(&pane_id)
         .ok()
-        .unwrap_or_else(|| capture_pane(&pane_id).unwrap_or_default());
+        .unwrap_or_else(|| tmux::capture_pane(&pane_id).unwrap_or_default());
 
     let mut ui = InteractiveUI::new(pane_id, &pane_content, config);
     ui.run()?;

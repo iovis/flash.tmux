@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::config::Config;
 use crate::search::{SearchInterface, SearchMatch, delete_prev_word, trim_wrapping_token};
-use crate::tmux::{ExitAction, tmux_run_quiet};
+use crate::tmux::{ExitAction, write_result_buffer};
 
 pub struct InteractiveUI {
     pane_id: String,
@@ -206,8 +206,7 @@ impl InteractiveUI {
 
     fn save_result(&self, text: &str, action: ExitAction) -> Result<()> {
         let pane_id = &self.pane_id;
-        let buffer = format!("__flash_copy_result_{pane_id}__");
-        let _ = tmux_run_quiet(&["set-buffer", "-b", &buffer, "--", text]);
+        let _ = write_result_buffer(pane_id, text);
         std::process::exit(action.exit_code());
     }
 }
