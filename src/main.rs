@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::BorrowedFd;
 use std::os::unix::io::AsRawFd;
 use std::process::{Command, ExitStatus};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM";
 
@@ -25,32 +25,6 @@ struct Cli {
     interactive: bool,
     #[arg(long)]
     pane_id: Option<String>,
-    #[arg(long)]
-    reverse_search: Option<String>,
-    #[arg(long)]
-    word_separators: Option<String>,
-    #[arg(long)]
-    case_sensitive: Option<String>,
-    #[arg(long)]
-    prompt_position: Option<String>,
-    #[arg(long)]
-    prompt_indicator: Option<String>,
-    #[arg(long)]
-    prompt_placeholder_text: Option<String>,
-    #[arg(long)]
-    highlight_colour: Option<String>,
-    #[arg(long)]
-    label_colour: Option<String>,
-    #[arg(long)]
-    prompt_colour: Option<String>,
-    #[arg(long)]
-    label_characters: Option<String>,
-    #[arg(long)]
-    auto_paste: Option<String>,
-    #[arg(long)]
-    idle_timeout: Option<u64>,
-    #[arg(long)]
-    idle_warning: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,15 +33,12 @@ struct Config {
     case_sensitive: bool,
     word_separators: Option<String>,
     prompt_placeholder_text: String,
-    highlight_colour: String,
-    label_colour: String,
-    prompt_position: String,
+    highlight_color: String,
+    label_color: String,
     prompt_indicator: String,
-    prompt_colour: String,
+    prompt_color: String,
     auto_paste_enable: bool,
     label_characters: Option<String>,
-    idle_timeout: u64,
-    idle_warning: u64,
 }
 
 impl Config {
@@ -77,105 +48,13 @@ impl Config {
             case_sensitive: false,
             word_separators: None,
             prompt_placeholder_text: "search...".to_string(),
-            highlight_colour: "\x1b[1;33m".to_string(),
-            label_colour: "\x1b[1;32m".to_string(),
-            prompt_position: "bottom".to_string(),
-            prompt_indicator: ">".to_string(),
-            prompt_colour: "\x1b[1m".to_string(),
+            highlight_color: "\x1b[1;33m".to_string(),
+            label_color: "\x1b[1;32m".to_string(),
+            prompt_indicator: "❯".to_string(),
+            prompt_color: "\x1b[1m".to_string(),
             auto_paste_enable: true,
             label_characters: None,
-            idle_timeout: 15,
-            idle_warning: 5,
         }
-    }
-
-    fn from_tmux() -> Self {
-        let mut cfg = Self::defaults();
-        let global = read_tmux_options_global();
-
-        cfg.reverse_search = get_bool(&global, "@flash-copy-reverse-search", cfg.reverse_search);
-        cfg.case_sensitive = get_bool(&global, "@flash-copy-case-sensitive", cfg.case_sensitive);
-        cfg.prompt_placeholder_text = get_string(
-            &global,
-            "@flash-copy-prompt-placeholder-text",
-            &cfg.prompt_placeholder_text,
-        );
-        cfg.highlight_colour = get_string(
-            &global,
-            "@flash-copy-highlight-colour",
-            &cfg.highlight_colour,
-        );
-        cfg.label_colour = get_string(&global, "@flash-copy-label-colour", &cfg.label_colour);
-        cfg.prompt_position = get_choice(
-            &global,
-            "@flash-copy-prompt-position",
-            &["top", "bottom"],
-            &cfg.prompt_position,
-        );
-        cfg.prompt_indicator = get_string(
-            &global,
-            "@flash-copy-prompt-indicator",
-            &cfg.prompt_indicator,
-        );
-        cfg.prompt_colour = get_string(&global, "@flash-copy-prompt-colour", &cfg.prompt_colour);
-        cfg.auto_paste_enable = get_bool(&global, "@flash-copy-auto-paste", cfg.auto_paste_enable);
-        cfg.label_characters = get_optional_string(&global, "@flash-copy-label-characters");
-        cfg.idle_timeout = get_int(&global, "@flash-copy-idle-timeout", cfg.idle_timeout);
-        cfg.idle_warning = get_int(&global, "@flash-copy-idle-warning", cfg.idle_warning);
-
-        if let Some(separators) = get_optional_string(&global, "@flash-copy-word-separators") {
-            cfg.word_separators = Some(separators);
-        } else if let Some(word_sep) = read_tmux_word_separators() {
-            cfg.word_separators = Some(word_sep);
-        }
-
-        cfg
-    }
-
-    fn from_args(cli: &Cli) -> Self {
-        let mut cfg = Self::defaults();
-
-        if let Some(v) = &cli.reverse_search {
-            cfg.reverse_search = parse_bool(v);
-        }
-        if let Some(v) = &cli.case_sensitive {
-            cfg.case_sensitive = parse_bool(v);
-        }
-        if let Some(v) = &cli.word_separators {
-            cfg.word_separators = if v.is_empty() { None } else { Some(v.clone()) };
-        }
-        if let Some(v) = &cli.prompt_position {
-            cfg.prompt_position.clone_from(v);
-        }
-        if let Some(v) = &cli.prompt_indicator {
-            cfg.prompt_indicator.clone_from(v);
-        }
-        if let Some(v) = &cli.prompt_placeholder_text {
-            cfg.prompt_placeholder_text.clone_from(v);
-        }
-        if let Some(v) = &cli.highlight_colour {
-            cfg.highlight_colour.clone_from(v);
-        }
-        if let Some(v) = &cli.label_colour {
-            cfg.label_colour.clone_from(v);
-        }
-        if let Some(v) = &cli.prompt_colour {
-            cfg.prompt_colour.clone_from(v);
-        }
-        if let Some(v) = &cli.label_characters {
-            cfg.label_characters = if v.is_empty() { None } else { Some(v.clone()) };
-        }
-        if let Some(v) = &cli.auto_paste {
-            cfg.auto_paste_enable = parse_bool(v);
-        }
-        if let Some(v) = cli.idle_timeout {
-            cfg.idle_timeout = v;
-        }
-        if let Some(v) = cli.idle_warning {
-            cfg.idle_warning = v;
-        }
-
-        cfg
     }
 }
 
@@ -340,8 +219,6 @@ struct InteractiveUI {
     search_query: String,
     current_matches: Vec<SearchMatch>,
     autopaste_modifier_active: bool,
-    start_time: Instant,
-    timeout_warning_shown: bool,
 }
 
 impl InteractiveUI {
@@ -364,43 +241,19 @@ impl InteractiveUI {
             search_query: String::new(),
             current_matches: Vec::new(),
             autopaste_modifier_active: false,
-            start_time: Instant::now(),
-            timeout_warning_shown: false,
         }
     }
 
     fn run(&mut self) -> Result<()> {
         let _term_guard = TerminalModeGuard::new()?;
 
-        self.start_time = Instant::now();
         self.display_content()?;
 
         loop {
-            let elapsed = self.start_time.elapsed().as_secs();
-            if elapsed >= self.config.idle_timeout {
-                self.save_result("", false)?;
-                return Ok(());
-            }
-
-            let warning_threshold = self
-                .config
-                .idle_timeout
-                .saturating_sub(self.config.idle_warning);
-            if !self.timeout_warning_shown
-                && self.config.idle_warning < self.config.idle_timeout
-                && elapsed >= warning_threshold
-            {
-                self.timeout_warning_shown = true;
-                self.display_content()?;
-            }
-
             let input = read_char_timeout(Duration::from_millis(100))?;
             let Some(ch) = input else {
                 continue;
             };
-
-            self.start_time = Instant::now();
-            self.timeout_warning_shown = false;
 
             match ch {
                 InputChar::CtrlC => {
@@ -490,7 +343,7 @@ impl InteractiveUI {
             .split('\n')
             .collect();
 
-        let (width, height) =
+        let (_width, height) =
             terminal_size().map_or((80, 40), |(Width(w), Height(h))| (w as usize, h as usize));
 
         let available_height = height.saturating_sub(1);
@@ -507,31 +360,18 @@ impl InteractiveUI {
             lines_plain.truncate(available_height);
         }
 
-        if self.config.prompt_position == "top" {
-            let prompt = self.build_search_bar_output(width);
-            out.write_all(prompt.as_bytes())?;
-            out.write_all(b"\n")?;
-            out.write_all(format!("\x1b[2;{height}r").as_bytes())?;
-            out.write_all(b"\x1b[2;1H")?;
-        } else {
-            let scroll_bottom = height.saturating_sub(1);
-            out.write_all(format!("\x1b[1;{scroll_bottom}r").as_bytes())?;
-            out.write_all(b"\x1b[1;1H")?;
-        }
+        let scroll_bottom = height.saturating_sub(1);
+        out.write_all(format!("\x1b[1;{scroll_bottom}r").as_bytes())?;
+        out.write_all(b"\x1b[1;1H")?;
 
         self.display_pane_content(&mut out, &lines, &lines_plain, available_height)?;
 
-        if self.config.prompt_position == "top" {
-            let cursor_col = self.prompt_cursor_column().max(1);
-            out.write_all(format!("\x1b[1;{cursor_col}H").as_bytes())?;
-        } else {
-            let prompt = self.build_search_bar_output(width);
-            out.write_all(format!("\x1b[{height};1H").as_bytes())?;
-            out.write_all(prompt.as_bytes())?;
+        let prompt = self.build_search_bar_output();
+        out.write_all(format!("\x1b[{height};1H").as_bytes())?;
+        out.write_all(prompt.as_bytes())?;
 
-            let cursor_col = self.prompt_cursor_column();
-            out.write_all(format!("\x1b[{cursor_col}G").as_bytes())?;
-        }
+        let cursor_col = self.prompt_cursor_column();
+        out.write_all(format!("\x1b[{cursor_col}G").as_bytes())?;
 
         out.flush()?;
         Ok(())
@@ -589,10 +429,10 @@ impl InteractiveUI {
         Ok(())
     }
 
-    fn build_search_bar_output(&self, term_width: usize) -> String {
+    fn build_search_bar_output(&self) -> String {
         let mut base = String::new();
         if self.search_query.is_empty() {
-            base.push_str(&self.config.prompt_colour);
+            base.push_str(&self.config.prompt_color);
             base.push_str(&self.config.prompt_indicator);
             base.push_str(ANSI_RESET);
             base.push(' ');
@@ -600,28 +440,11 @@ impl InteractiveUI {
             base.push_str(&self.config.prompt_placeholder_text);
             base.push_str(ANSI_RESET);
         } else {
-            base.push_str(&self.config.prompt_colour);
+            base.push_str(&self.config.prompt_color);
             base.push_str(&self.config.prompt_indicator);
             base.push_str(ANSI_RESET);
             base.push(' ');
             base.push_str(&self.search_query);
-        }
-
-        if self.timeout_warning_shown {
-            let remaining = self
-                .config
-                .idle_timeout
-                .saturating_sub(self.start_time.elapsed().as_secs());
-            let warning_text = format!("Idle, terminating in {remaining}s...");
-            let base_len = visible_length(&base);
-            let warning_len = visible_length(&warning_text);
-            if base_len + warning_len + 3 < term_width {
-                let padding = term_width - base_len - warning_len - 1;
-                base.push_str(&" ".repeat(padding));
-                base.push_str("\x1b[1m\x1b[33m");
-                base.push_str(&warning_text);
-                base.push_str(ANSI_RESET);
-            }
         }
 
         base
@@ -832,8 +655,8 @@ fn display_line_with_matches(
             map_position_to_coloured(&display, plain_replace_index, &mut pos_cache, cache_line_id);
         let coloured_skip_len = advance_plain_chars(&display[coloured_replace_start..], 1);
         let coloured_label = format!(
-            "{label_colour}{label}{ANSI_RESET}",
-            label_colour = config.label_colour
+            "{label_color}{label}{ANSI_RESET}",
+            label_color = config.label_color
         );
 
         if plain_replace_index < line_plain.len() {
@@ -861,8 +684,8 @@ fn display_line_with_matches(
         let before = display[..coloured_match_start].to_string();
         let after = display[coloured_match_end..].to_string();
         let highlighted = format!(
-            "{ANSI_RESET}{highlight_colour}{plain_matched_part}{ANSI_RESET}",
-            highlight_colour = config.highlight_colour
+            "{ANSI_RESET}{highlight_color}{plain_matched_part}{ANSI_RESET}",
+            highlight_color = config.highlight_color
         );
         display = format!("{before}{highlighted}{after}");
 
@@ -1206,116 +1029,6 @@ fn tmux_run_quiet(args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn read_tmux_options_global() -> HashMap<String, String> {
-    let output = tmux_output_trim(&["show-options", "-g"], TrimMode::None).unwrap_or_default();
-    parse_tmux_options(&output)
-}
-
-fn read_tmux_word_separators() -> Option<String> {
-    let output = tmux_output_trim(
-        &["show-window-option", "-gv", "word-separators"],
-        TrimMode::TrimNewlines,
-    )
-    .ok()?;
-    if output.is_empty() {
-        return None;
-    }
-    if output.starts_with('"') && output.ends_with('"') {
-        return Some(unescape_tmux_value(&output[1..output.len() - 1]));
-    }
-    Some(unescape_tmux_value(&output))
-}
-
-fn parse_tmux_options(output: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for line in output.lines() {
-        if let Some((key, value)) = line.split_once(' ') {
-            let mut value = value.trim().to_string();
-            if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
-                value = value[1..value.len() - 1].to_string();
-                value = unescape_tmux_value(&value);
-            }
-            map.insert(key.to_string(), value);
-        }
-    }
-    map
-}
-
-fn unescape_tmux_value(value: &str) -> String {
-    let mut out = String::new();
-    let mut chars = value.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('t') => out.push('\t'),
-            Some('e') => out.push('\x1b'),
-            Some('x') => {
-                let hi = chars.next();
-                let lo = chars.next();
-                if let (Some(hi), Some(lo)) = (hi, lo)
-                    && let Ok(v) = u8::from_str_radix(&format!("{hi}{lo}"), 16)
-                {
-                    out.push(v as char);
-                }
-            }
-            Some(first @ '0'..='7') => {
-                let mut octal = String::new();
-                octal.push(first);
-                for _ in 0..2 {
-                    if let Some(&next) = chars.peek()
-                        && ('0'..='7').contains(&next)
-                    {
-                        octal.push(next);
-                        chars.next();
-                    }
-                }
-                if let Ok(v) = u8::from_str_radix(&octal, 8) {
-                    out.push(v as char);
-                }
-            }
-            Some(other) => out.push(other),
-            None => break,
-        }
-    }
-    out
-}
-
-fn parse_bool(value: &str) -> bool {
-    matches!(value.to_lowercase().as_str(), "on" | "true" | "1" | "yes")
-}
-
-fn get_bool(map: &HashMap<String, String>, key: &str, default: bool) -> bool {
-    map.get(key).map_or(default, |v| parse_bool(v))
-}
-
-fn get_string(map: &HashMap<String, String>, key: &str, default: &str) -> String {
-    map.get(key).cloned().unwrap_or_else(|| default.to_string())
-}
-
-fn get_optional_string(map: &HashMap<String, String>, key: &str) -> Option<String> {
-    map.get(key).cloned().filter(|v| !v.is_empty())
-}
-
-fn get_choice(map: &HashMap<String, String>, key: &str, choices: &[&str], default: &str) -> String {
-    if let Some(value) = map.get(key) {
-        for choice in choices {
-            if choice.eq_ignore_ascii_case(value) {
-                return choice.to_string();
-            }
-        }
-    }
-    default.to_string()
-}
-
-fn get_int(map: &HashMap<String, String>, key: &str, default: u64) -> u64 {
-    map.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
-}
-
 #[derive(Clone, Copy)]
 enum TrimMode {
     Trim,
@@ -1382,8 +1095,6 @@ fn run_with_input(cmd: &str, args: &[&str], input: &str) -> bool {
 fn run_parent() -> Result<()> {
     let pane_id = get_tmux_pane_id()?;
     let pane_content = capture_pane(&pane_id).unwrap_or_default();
-    let config = Config::from_tmux();
-
     let pane_buffer = format!("__flash_copy_pane_content_{pane_id}__");
     let _ = tmux_run_quiet(&["set-buffer", "-b", &pane_buffer, "--", &pane_content]);
 
@@ -1417,32 +1128,6 @@ fn run_parent() -> Result<()> {
         "--interactive".to_string(),
         "--pane-id".to_string(),
         pane_id.clone(),
-        "--reverse-search".to_string(),
-        config.reverse_search.to_string(),
-        "--word-separators".to_string(),
-        config.word_separators.clone().unwrap_or_default(),
-        "--case-sensitive".to_string(),
-        config.case_sensitive.to_string(),
-        "--prompt-placeholder-text".to_string(),
-        config.prompt_placeholder_text.clone(),
-        "--highlight-colour".to_string(),
-        config.highlight_colour.clone(),
-        "--label-colour".to_string(),
-        config.label_colour.clone(),
-        "--prompt-position".to_string(),
-        config.prompt_position.clone(),
-        "--prompt-indicator".to_string(),
-        config.prompt_indicator.clone(),
-        "--prompt-colour".to_string(),
-        config.prompt_colour.clone(),
-        "--label-characters".to_string(),
-        config.label_characters.clone().unwrap_or_default(),
-        "--auto-paste".to_string(),
-        config.auto_paste_enable.to_string(),
-        "--idle-timeout".to_string(),
-        config.idle_timeout.to_string(),
-        "--idle-warning".to_string(),
-        config.idle_warning.to_string(),
     ];
 
     let status = run_tmux_status(&args)?;
@@ -1476,7 +1161,7 @@ fn run_interactive(cli: &Cli) -> Result<()> {
         .pane_id
         .clone()
         .context("pane-id is required in interactive mode")?;
-    let config = Config::from_args(cli);
+    let config = Config::defaults();
 
     let pane_buffer = format!("__flash_copy_pane_content_{pane_id}__");
     let pane_content = tmux_output_trim(&["show-buffer", "-b", &pane_buffer], TrimMode::None)
