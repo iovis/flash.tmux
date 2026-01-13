@@ -4,6 +4,7 @@ use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::termios::{self, Termios};
 use nix::libc;
 use terminal_size::{terminal_size, Height, Width};
+use unicode_width::UnicodeWidthStr;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
@@ -524,9 +525,9 @@ impl InteractiveUI {
     }
 
     fn prompt_cursor_column(&self) -> usize {
-        let mut col = self.config.prompt_indicator.len() + 2;
+        let mut col = visible_length(&self.config.prompt_indicator) + 2;
         if !self.search_query.is_empty() {
-            col += self.search_query.len();
+            col += visible_length(&self.search_query);
         }
         col
     }
@@ -607,7 +608,7 @@ impl InteractiveUI {
                 .saturating_sub(self.start_time.elapsed().as_secs());
             let warning_text = format!("Idle, terminating in {}s...", remaining);
             let base_len = visible_length(&base);
-            let warning_len = warning_text.len();
+            let warning_len = visible_length(&warning_text);
             if base_len + warning_len + 3 < term_width {
                 let padding = term_width - base_len - warning_len - 1;
                 base.push_str(&" ".repeat(padding));
@@ -648,6 +649,7 @@ impl TerminalModeGuard {
         let original = termios::tcgetattr(fd_borrowed).context("failed to get termios")?;
         let mut raw = original.clone();
         termios::cfmakeraw(&mut raw);
+        raw.output_flags = original.output_flags;
         let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         termios::tcsetattr(fd_borrowed, termios::SetArg::TCSADRAIN, &raw)
             .context("failed to set raw mode")?;
@@ -875,18 +877,14 @@ fn map_position_to_coloured(
     let mut plain_idx = 0usize;
 
     while plain_idx < plain_pos && coloured_idx < bytes.len() {
-        if bytes[coloured_idx] == 0x1b && coloured_idx + 1 < bytes.len() && bytes[coloured_idx + 1] == b'[' {
-            coloured_idx += 2;
-            while coloured_idx < bytes.len() && bytes[coloured_idx] != b'm' {
-                coloured_idx += 1;
-            }
-            if coloured_idx < bytes.len() {
-                coloured_idx += 1;
-            }
-        } else {
-            coloured_idx += 1;
-            plain_idx += 1;
+        if bytes[coloured_idx] == 0x1b {
+            let skip = ansi_sequence_len(bytes, coloured_idx);
+            coloured_idx = coloured_idx.saturating_add(skip);
+            continue;
         }
+
+        coloured_idx += 1;
+        plain_idx += 1;
     }
 
     cache.insert((line_id, plain_pos), coloured_idx);
@@ -899,17 +897,17 @@ fn advance_plain_chars(coloured_text: &str, count: usize) -> usize {
     let mut plain_idx = 0usize;
 
     while plain_idx < count && coloured_idx < bytes.len() {
-        if bytes[coloured_idx] == 0x1b && coloured_idx + 1 < bytes.len() && bytes[coloured_idx + 1] == b'[' {
-            coloured_idx += 2;
-            while coloured_idx < bytes.len() && bytes[coloured_idx] != b'm' {
-                coloured_idx += 1;
-            }
-            if coloured_idx < bytes.len() {
-                coloured_idx += 1;
-            }
-        } else {
-            coloured_idx += 1;
+        if bytes[coloured_idx] == 0x1b {
+            let skip = ansi_sequence_len(bytes, coloured_idx);
+            coloured_idx = coloured_idx.saturating_add(skip);
+            continue;
+        }
+
+        if let Some(ch) = coloured_text[coloured_idx..].chars().next() {
+            coloured_idx += ch.len_utf8();
             plain_idx += 1;
+        } else {
+            break;
         }
     }
 
@@ -917,49 +915,74 @@ fn advance_plain_chars(coloured_text: &str, count: usize) -> usize {
 }
 
 fn visible_length(text: &str) -> usize {
-    let bytes = text.as_bytes();
-    let mut idx = 0usize;
-    let mut visible = 0usize;
-
-    while idx < bytes.len() {
-        if bytes[idx] == 0x1b && idx + 1 < bytes.len() && bytes[idx + 1] == b'[' {
-            idx += 2;
-            while idx < bytes.len() && bytes[idx] != b'm' {
-                idx += 1;
-            }
-            if idx < bytes.len() {
-                idx += 1;
-            }
-        } else {
-            idx += 1;
-            visible += 1;
-        }
-    }
-
-    visible
+    UnicodeWidthStr::width(strip_ansi_codes(text).as_str())
 }
 
 fn strip_ansi_codes(text: &str) -> String {
     let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
     let mut idx = 0usize;
 
     while idx < bytes.len() {
-        if bytes[idx] == 0x1b && idx + 1 < bytes.len() && bytes[idx + 1] == b'[' {
-            idx += 2;
-            while idx < bytes.len() && bytes[idx] != b'm' {
-                idx += 1;
-            }
-            if idx < bytes.len() {
-                idx += 1;
-            }
-        } else {
-            out.push(bytes[idx] as char);
-            idx += 1;
+        if bytes[idx] == 0x1b {
+            let skip = ansi_sequence_len(bytes, idx);
+            idx = idx.saturating_add(skip);
+            continue;
         }
+
+        out.push(bytes[idx]);
+        idx += 1;
     }
 
-    out
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn ansi_sequence_len(bytes: &[u8], start: usize) -> usize {
+    if start >= bytes.len() {
+        return 0;
+    }
+    if bytes[start] != 0x1b {
+        return 1;
+    }
+    if start + 1 >= bytes.len() {
+        return 1;
+    }
+
+    match bytes[start + 1] {
+        b'[' => {
+            let mut idx = start + 2;
+            while idx < bytes.len() {
+                let b = bytes[idx];
+                if (0x40..=0x7e).contains(&b) {
+                    idx += 1;
+                    break;
+                }
+                idx += 1;
+            }
+            idx.saturating_sub(start).max(1)
+        }
+        b']' | b'P' | b'^' | b'_' | b'X' => {
+            let mut idx = start + 2;
+            while idx < bytes.len() {
+                if bytes[idx] == 0x07 {
+                    return idx + 1 - start;
+                }
+                if bytes[idx] == 0x1b && idx + 1 < bytes.len() && bytes[idx + 1] == b'\\' {
+                    return idx + 2 - start;
+                }
+                idx += 1;
+            }
+            bytes.len().saturating_sub(start).max(1)
+        }
+        b'(' | b')' | b'*' | b'+' | b'-' | b'.' | b'/' => {
+            if start + 2 < bytes.len() {
+                3
+            } else {
+                bytes.len().saturating_sub(start).max(1)
+            }
+        }
+        _ => 2,
+    }
 }
 
 fn find_sequences(line: &str) -> Vec<(usize, usize)> {

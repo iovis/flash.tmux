@@ -8,6 +8,7 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 nix = { version = "0.28", features = ["poll", "term"] }
 terminal_size = "0.3"
+unicode-width = "0.1"
 
 [[bin]]
 name = "flash-tmux"
