@@ -1,12 +1,3 @@
-use std::collections::HashMap;
-
-use unicode_width::UnicodeWidthStr;
-
-#[must_use]
-pub fn visible_length(text: &str) -> usize {
-    UnicodeWidthStr::width(strip_ansi_codes(text).as_str())
-}
-
 #[must_use]
 pub fn strip_ansi_codes(text: &str) -> String {
     let bytes = text.as_bytes();
@@ -25,60 +16,6 @@ pub fn strip_ansi_codes(text: &str) -> String {
     }
 
     String::from_utf8_lossy(&out).to_string()
-}
-
-#[allow(clippy::implicit_hasher)]
-pub fn map_position_to_colored(
-    colored_text: &str,
-    plain_pos: usize,
-    cache: &mut HashMap<(usize, usize), usize>,
-    line_id: usize,
-) -> usize {
-    if let Some(v) = cache.get(&(line_id, plain_pos)) {
-        return *v;
-    }
-
-    let bytes = colored_text.as_bytes();
-    let mut colored_idx = 0usize;
-    let mut plain_idx = 0usize;
-
-    while plain_idx < plain_pos && colored_idx < bytes.len() {
-        if bytes[colored_idx] == 0x1b {
-            let skip = ansi_sequence_len(bytes, colored_idx);
-            colored_idx = colored_idx.saturating_add(skip);
-            continue;
-        }
-
-        colored_idx += 1;
-        plain_idx += 1;
-    }
-
-    cache.insert((line_id, plain_pos), colored_idx);
-    colored_idx
-}
-
-#[must_use]
-pub fn advance_plain_chars(colored_text: &str, count: usize) -> usize {
-    let bytes = colored_text.as_bytes();
-    let mut colored_idx = 0usize;
-    let mut plain_idx = 0usize;
-
-    while plain_idx < count && colored_idx < bytes.len() {
-        if bytes[colored_idx] == 0x1b {
-            let skip = ansi_sequence_len(bytes, colored_idx);
-            colored_idx = colored_idx.saturating_add(skip);
-            continue;
-        }
-
-        if let Some(ch) = colored_text[colored_idx..].chars().next() {
-            colored_idx += ch.len_utf8();
-            plain_idx += 1;
-        } else {
-            break;
-        }
-    }
-
-    colored_idx
 }
 
 #[must_use]
@@ -141,30 +78,8 @@ mod tests {
     }
 
     #[test]
-    fn visible_length_ignores_ansi() {
-        let input = "\x1b[1mwide\x1b[0m";
-        assert_eq!(visible_length(input), 4);
-    }
-
-    #[test]
     fn ansi_sequence_len_sgr() {
         let input = b"\x1b[31m";
         assert_eq!(ansi_sequence_len(input, 0), 5);
-    }
-
-    #[test]
-    fn advance_plain_chars_skips_ansi() {
-        let input = "\x1b[31mab\x1b[0m";
-        assert_eq!(advance_plain_chars(input, 1), 6);
-        assert_eq!(advance_plain_chars(input, 2), 7);
-    }
-
-    #[test]
-    fn map_position_to_colored_uses_cache() {
-        let input = "\x1b[31mab\x1b[0m";
-        let mut cache = HashMap::new();
-        let first = map_position_to_colored(input, 2, &mut cache, 0);
-        let second = map_position_to_colored(input, 2, &mut cache, 0);
-        assert_eq!(first, second);
     }
 }

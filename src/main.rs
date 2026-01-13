@@ -10,6 +10,7 @@ use flash_tmux::ansi;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Write};
 use std::process::Command;
+use unicode_width::UnicodeWidthStr;
 
 const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
@@ -29,6 +30,7 @@ struct Config {
     prompt_placeholder_text: String,
     prompt_indicator: String,
     highlight_style: StyleSpec,
+    current_style: StyleSpec,
     label_style: StyleSpec,
     prompt_style: StyleSpec,
     style_sequences: StyleSequences,
@@ -39,9 +41,23 @@ impl Config {
         Self {
             prompt_placeholder_text: "search...".to_string(),
             prompt_indicator: "❯".to_string(),
-            highlight_style: StyleSpec::new(Some(Color::Yellow), true),
-            label_style: StyleSpec::new(Some(Color::Green), true),
-            prompt_style: StyleSpec::new(None, true),
+            highlight_style: StyleSpec::new(Some(Color::Rgb {
+                r: 186,
+                g: 187,
+                b: 242,
+            })),
+            current_style: StyleSpec::new(Some(Color::Rgb {
+                r: 239,
+                g: 159,
+                b: 119,
+            })),
+            label_style: StyleSpec::new(Some(Color::Rgb {
+                r: 166,
+                g: 209,
+                b: 138,
+            }))
+            .bold(),
+            prompt_style: StyleSpec::new(None).bold(),
             style_sequences: StyleSequences::new(),
         }
     }
@@ -54,8 +70,13 @@ struct StyleSpec {
 }
 
 impl StyleSpec {
-    fn new(fg: Option<Color>, bold: bool) -> Self {
-        Self { fg, bold }
+    fn new(fg: Option<Color>) -> Self {
+        Self { fg, bold: false }
+    }
+
+    fn bold(mut self) -> Self {
+        self.bold = true;
+        self
     }
 
     fn apply(self, text: &str) -> String {
@@ -192,7 +213,6 @@ struct PaneDimensions {
 
 struct InteractiveUI {
     pane_id: String,
-    pane_content: String,
     pane_content_plain: String,
     config: Config,
     search: SearchInterface,
@@ -201,13 +221,12 @@ struct InteractiveUI {
 }
 
 impl InteractiveUI {
-    fn new(pane_id: String, pane_content: String, config: Config) -> Self {
-        let pane_content_plain = ansi::strip_ansi_codes(&pane_content);
+    fn new(pane_id: String, pane_content: &str, config: Config) -> Self {
+        let pane_content_plain = ansi::strip_ansi_codes(pane_content);
         let search = SearchInterface::new(&pane_content_plain);
 
         Self {
             pane_id,
-            pane_content,
             pane_content_plain,
             config,
             search,
@@ -312,26 +331,23 @@ impl InteractiveUI {
         let mut out = io::stderr();
         execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
 
-        let lines: Vec<&str> = self.pane_content.split_terminator('\n').collect();
-        let lines_plain: Vec<&str> = self.pane_content_plain.split_terminator('\n').collect();
+        let lines: Vec<&str> = self.pane_content_plain.split_terminator('\n').collect();
 
         let (_, height) = terminal::size().unwrap_or((80, 40));
         let height = height as usize;
 
         let available_height = height.saturating_sub(1);
         let mut lines = lines;
-        let mut lines_plain = lines_plain;
 
         if lines.len() > available_height {
             lines.truncate(available_height);
-            lines_plain.truncate(available_height);
         }
 
         let scroll_bottom = height.saturating_sub(1);
         out.write_all(format!("\x1b[1;{scroll_bottom}r").as_bytes())?;
         out.queue(MoveTo(0, 0))?;
 
-        self.display_pane_content(&mut out, &lines, &lines_plain, available_height)?;
+        self.display_pane_content(&mut out, &lines, available_height)?;
 
         let prompt = self.build_search_bar_output();
         let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
@@ -347,9 +363,9 @@ impl InteractiveUI {
     }
 
     fn prompt_cursor_column(&self) -> usize {
-        let mut col = ansi::visible_length(&self.config.prompt_indicator) + 2;
+        let mut col = UnicodeWidthStr::width(self.config.prompt_indicator.as_str()) + 2;
         if !self.search_query.is_empty() {
-            col += ansi::visible_length(&self.search_query);
+            col += UnicodeWidthStr::width(self.search_query.as_str());
         }
         col
     }
@@ -358,34 +374,20 @@ impl InteractiveUI {
         &self,
         out: &mut io::Stderr,
         lines: &[&str],
-        lines_plain: &[&str],
         available_height: usize,
     ) -> Result<()> {
         let total_lines = lines.len().min(available_height);
 
-        for (line_idx, (line, line_plain)) in lines
-            .iter()
-            .zip(lines_plain)
-            .take(available_height)
-            .enumerate()
-        {
+        for (line_idx, line) in lines.iter().take(available_height).enumerate() {
             let matches = self.search.get_matches_at_line(line_idx);
+            let current_match = self
+                .current_matches
+                .first()
+                .filter(|m| m.line == line_idx)
+                .map(|m| (m.col, m.match_start, m.match_end));
             let is_last_line = line_idx + 1 == total_lines;
 
-            let output = if matches.is_empty() {
-                if self.search_query.is_empty() {
-                    line.to_string()
-                } else {
-                    dim_colored_line(line, &self.config.style_sequences)
-                }
-            } else {
-                let dimmed = if self.search_query.is_empty() {
-                    line.to_string()
-                } else {
-                    dim_colored_line(line, &self.config.style_sequences)
-                };
-                display_line_with_matches(&dimmed, line_plain, &matches, &self.config)
-            };
+            let output = render_line_with_matches(line, &matches, &self.config, current_match);
 
             if is_last_line {
                 out.write_all(output.as_bytes())?;
@@ -491,94 +493,135 @@ fn delete_prev_word(input: &str) -> String {
     chars.into_iter().collect()
 }
 
-fn dim_colored_line(line: &str, styles: &StyleSequences) -> String {
-    if line.starts_with(&styles.dim) {
-        return line.to_string();
-    }
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum StyleKind {
+    Base,
+    Highlight,
+    Current,
+}
 
-    let reset_dim = format!("{}{}", styles.reset, styles.dim);
-    let mut out = String::new();
-    out.push_str(&styles.dim);
-    out.push_str(&line.replace(&styles.reset, &reset_dim));
-    if !line.ends_with(&styles.reset) {
-        out.push_str(&styles.reset);
+impl StyleKind {
+    fn priority(self) -> u8 {
+        match self {
+            StyleKind::Base => 0,
+            StyleKind::Highlight => 1,
+            StyleKind::Current => 2,
+        }
     }
-    out
 }
 
 fn dim_text(text: &str) -> String {
     format!("{}", style::style(text).attribute(Attribute::Dim))
 }
 
-fn display_line_with_matches(
-    display_line: &str,
-    line_plain: &str,
+fn render_line_with_matches(
+    line: &str,
     matches: &[&SearchMatch],
     config: &Config,
+    current_match: Option<(usize, usize, usize)>,
 ) -> String {
-    let mut display = display_line.to_string();
-    let mut cache_line_id = 0usize;
-    let mut pos_cache: HashMap<(usize, usize), usize> = HashMap::new();
-
-    let mut ordered = matches.to_vec();
-    ordered.sort_by(|a, b| b.col.cmp(&a.col));
-
-    for m in ordered {
-        let Some(label) = m.label else { continue };
-
-        let word_start = m.col;
-        let plain_match_start = word_start + m.match_start;
-        let plain_match_end = word_start + m.match_end;
-        let plain_replace_index = plain_match_end;
-
-        let colored_replace_start = ansi::map_position_to_colored(
-            &display,
-            plain_replace_index,
-            &mut pos_cache,
-            cache_line_id,
-        );
-        let colored_skip_len = ansi::advance_plain_chars(&display[colored_replace_start..], 1);
-        let colored_label = config.label_style.apply(&label.to_string());
-
-        if plain_replace_index < line_plain.len() {
-            let mut new = String::new();
-            new.push_str(&display[..colored_replace_start]);
-            new.push_str(&colored_label);
-            new.push_str(&display[colored_replace_start + colored_skip_len..]);
-            display = new;
-        } else {
-            let mut new = String::new();
-            new.push_str(&display[..colored_replace_start]);
-            new.push_str(&colored_label);
-            new.push_str(&display[colored_replace_start..]);
-            display = new;
-        }
-
-        cache_line_id += 1;
-
-        let colored_match_start = ansi::map_position_to_colored(
-            &display,
-            plain_match_start,
-            &mut pos_cache,
-            cache_line_id,
-        );
-        let colored_match_end =
-            ansi::map_position_to_colored(&display, plain_match_end, &mut pos_cache, cache_line_id);
-        let plain_matched_part = &m.text[m.match_start..m.match_end];
-
-        let before = display[..colored_match_start].to_string();
-        let after = display[colored_match_end..].to_string();
-        let highlighted = format!(
+    if line.is_empty() {
+        return format!(
             "{}{}",
-            config.style_sequences.reset,
-            config.highlight_style.apply(plain_matched_part)
+            config.style_sequences.dim, config.style_sequences.reset
         );
-        display = format!("{before}{highlighted}{after}");
-
-        cache_line_id += 1;
     }
 
-    display
+    let mut label_map: HashMap<usize, char> = HashMap::new();
+    for m in matches {
+        if let Some(label) = m.label {
+            let label_pos = m.col + m.match_end;
+            if label_pos <= line.len() {
+                label_map.entry(label_pos).or_insert(label);
+            }
+        }
+    }
+
+    let mut style_map = vec![StyleKind::Base; line.len()];
+    for m in matches {
+        let style_kind = if current_match == Some((m.col, m.match_start, m.match_end)) {
+            StyleKind::Current
+        } else {
+            StyleKind::Highlight
+        };
+        let start = m.col + m.match_start;
+        let end = m.col + m.match_end;
+        if start >= end {
+            continue;
+        }
+        let start = start.min(line.len());
+        let end = end.min(line.len());
+        for slot in style_map.iter_mut().take(end).skip(start) {
+            if style_kind.priority() > slot.priority() {
+                *slot = style_kind;
+            }
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(&config.style_sequences.dim);
+
+    let mut active = StyleKind::Base;
+    let mut buffer = String::new();
+
+    for (idx, ch) in line.char_indices() {
+        if let Some(label) = label_map.get(&idx) {
+            flush_segment(&mut out, &mut buffer, active, config);
+            out.push_str(&config.style_sequences.reset);
+            out.push_str(&config.label_style.apply(&label.to_string()));
+            out.push_str(&config.style_sequences.reset);
+            out.push_str(&config.style_sequences.dim);
+            continue;
+        }
+
+        let style_kind = style_map.get(idx).copied().unwrap_or(StyleKind::Base);
+        if style_kind != active {
+            flush_segment(&mut out, &mut buffer, active, config);
+            active = style_kind;
+        }
+
+        buffer.push(ch);
+    }
+
+    if let Some(label) = label_map.get(&line.len()) {
+        flush_segment(&mut out, &mut buffer, active, config);
+        out.push_str(&config.style_sequences.reset);
+        out.push_str(&config.label_style.apply(&label.to_string()));
+        out.push_str(&config.style_sequences.reset);
+        out.push_str(&config.style_sequences.dim);
+    }
+
+    flush_segment(&mut out, &mut buffer, active, config);
+
+    if !out.ends_with(&config.style_sequences.reset) {
+        out.push_str(&config.style_sequences.reset);
+    }
+
+    out
+}
+
+fn flush_segment(out: &mut String, buffer: &mut String, style: StyleKind, config: &Config) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    match style {
+        StyleKind::Base => out.push_str(buffer),
+        StyleKind::Highlight => {
+            out.push_str(&config.style_sequences.reset);
+            out.push_str(&config.highlight_style.apply(buffer));
+            out.push_str(&config.style_sequences.reset);
+            out.push_str(&config.style_sequences.dim);
+        }
+        StyleKind::Current => {
+            out.push_str(&config.style_sequences.reset);
+            out.push_str(&config.current_style.apply(buffer));
+            out.push_str(&config.style_sequences.reset);
+            out.push_str(&config.style_sequences.dim);
+        }
+    }
+
+    buffer.clear();
 }
 
 fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
@@ -889,7 +932,7 @@ fn run_interactive(cli: &Cli) -> Result<()> {
         .ok()
         .unwrap_or_else(|| capture_pane(&pane_id).unwrap_or_default());
 
-    let mut ui = InteractiveUI::new(pane_id, pane_content, config);
+    let mut ui = InteractiveUI::new(pane_id, &pane_content, config);
     ui.run()?;
 
     Ok(())
