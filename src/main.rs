@@ -226,6 +226,14 @@ impl InteractiveUI {
                     }
                 }
                 InputChar::Char(c) => {
+                    if c == ' ' {
+                        if let Some(first) = self.current_matches.first() {
+                            self.save_result(&first.copy_text, true)?;
+                            return Ok(());
+                        }
+                        continue;
+                    }
+
                     let label_lookup = c.to_ascii_lowercase();
                     if !self.search_query.is_empty()
                         && let Some(match_item) = self.search.get_match_by_label(label_lookup)
