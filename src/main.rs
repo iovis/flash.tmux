@@ -50,7 +50,6 @@ impl Config {
 #[derive(Clone, Debug)]
 struct SearchMatch {
     text: String,
-    start_pos: usize,
     line: usize,
     col: usize,
     label: Option<char>,
@@ -80,7 +79,6 @@ impl SearchInterface {
         }
 
         let mut matches = Vec::new();
-        let mut pos = 0usize;
         let query_cmp = query.to_ascii_lowercase();
         let query_bytes = query_cmp.as_bytes();
         let query_len = query_bytes.len();
@@ -89,7 +87,7 @@ impl SearchInterface {
             for (token_start, token_end) in find_tokens(line) {
                 let token = &line[token_start..token_end];
                 let token_bytes = token.as_bytes();
-                if query_len == 0 || query_len > token_bytes.len() {
+                if query_len > token_bytes.len() {
                     continue;
                 }
 
@@ -108,7 +106,6 @@ impl SearchInterface {
 
                     matches.push(SearchMatch {
                         text: token.to_string(),
-                        start_pos: pos + token_start,
                         line: line_idx,
                         col: token_start,
                         label: None,
@@ -117,20 +114,18 @@ impl SearchInterface {
                     });
                 }
             }
-
-            pos += line.len() + 1;
         }
 
         let mut seen = HashSet::new();
         let mut unique = Vec::new();
         for m in matches {
-            let key = (m.start_pos, m.match_start, m.text.clone());
+            let key = (m.line, m.col, m.match_start, m.text.clone());
             if seen.insert(key) {
                 unique.push(m);
             }
         }
 
-        unique.sort_by_key(|m| m.start_pos);
+        unique.sort_by_key(|m| (m.line, m.col, m.match_start));
         unique.reverse();
 
         assign_labels(&mut unique, query);
@@ -257,16 +252,8 @@ impl InteractiveUI {
         let mut out = io::stderr();
         out.write_all(b"\x1b[2J\x1b[H")?;
 
-        let lines: Vec<&str> = self
-            .pane_content
-            .trim_end_matches('\n')
-            .split('\n')
-            .collect();
-        let lines_plain: Vec<&str> = self
-            .pane_content_plain
-            .trim_end_matches('\n')
-            .split('\n')
-            .collect();
+        let lines: Vec<&str> = self.pane_content.split_terminator('\n').collect();
+        let lines_plain: Vec<&str> = self.pane_content_plain.split_terminator('\n').collect();
 
         let (_width, height) =
             terminal_size().map_or((80, 40), |(Width(w), Height(h))| (w as usize, h as usize));
@@ -274,11 +261,6 @@ impl InteractiveUI {
         let available_height = height.saturating_sub(1);
         let mut lines = lines;
         let mut lines_plain = lines_plain;
-
-        if !lines.is_empty() {
-            lines.pop();
-            lines_plain.pop();
-        }
 
         if lines.len() > available_height {
             lines.truncate(available_height);
