@@ -1,59 +1,43 @@
-# flash.tmux (Rust)
+# flash.tmux
 
-A Rust re-implementation of the flash-copy tmux workflow: capture the active pane, open a popup that overlays it, type to filter matches, then press a single label key to copy (and optionally paste) the match.
+A tmux plugin inspired by [flash.nvim](https://github.com/folke/flash.nvim) that enables you to search visible strings in the current tmux pane and copy it to system clipboard by pressing the associated label key.
 
-This keeps the same tmux interaction model as the Python plugin:
+> [!NOTE]
+> This is a fork/rewrite of [flash-copy.tmux](https://github.com/Kristijan/flash-copy.tmux)
+> Configurations are removed and some behaviors are changed.
 
-- `tmux capture-pane -p -e -J` for visible text
-- `tmux display-popup -E -B` to create an overlay popup
-- tmux buffers for parent/child IPC
-- OSC52 via `tmux set-buffer -w` for clipboard
+## Install
 
-## Build
+Install with cargo:
 
 ```bash
-cd /home/david/code/rust/flash.tmux
-cargo build --release
+cargo install flash_tmux
 ```
 
-The tmux entry script will use `target/release/flash-tmux` if present. If not, it falls back to `cargo run --release`.
+## tmux setup
 
-## Install (TPM style)
+Add a binding in `~/.tmux.conf`:
 
-Add to `~/.tmux.conf` (path here is local clone):
-
-```bash
-run-shell /home/david/code/rust/flash.tmux/flash.tmux
-```
-
-Reload:
-
-```bash
-tmux source-file ~/.tmux.conf
+```tmux
+bind F run flash_tmux
 ```
 
 ## Usage
 
-- Default binding: `<prefix> S-f` (same as the original plugin with `@flash-copy-bind-key` = `F`).
-- Type to search.
-- Press the label character to copy.
-- Type a lowercase label to copy + auto-paste, or an uppercase label to copy only.
-- Exit with Esc, Ctrl-C, or Ctrl-D.
+- Type to search (ASCII case-insensitive)
+- Labels are lowercase
+- Lowercase label copies and auto-pastes
+- Uppercase label copies only
+- Enter or Space selects the first match (auto-paste)
+- Exit with Esc, Ctrl-C, or Ctrl-D
 
-## Configuration
+## Matching behavior
 
-Only the tmux key binding is configurable:
+- Matches are whitespace-delimited tokens.
+- If a token is wrapped by `()`, `[]`, `{}`, double quotes, single quotes, or backticks, and the match is inside those wrappers, the outer wrapper is stripped before copying/pasting.
+  - Example: `(/home/user/project)` -> `/home/user/project`
 
-- `@flash-copy-bind-key` (default: `F`)
+## Notes
 
-Example:
-
-```bash
-set -g @flash-copy-bind-key "C-f"
-run-shell /home/david/code/rust/flash.tmux/flash.tmux
-```
-
-## Notes / Differences
-
-- Debug logging is not implemented yet.
+- Clipboard uses tmux buffers (OSC52 via `set-buffer -w`) with OS fallbacks when available.
 - ANSI handling assumes ANSI SGR (`\x1b[...m`) codes for color resets/highlights.
