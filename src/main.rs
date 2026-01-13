@@ -1,0 +1,1458 @@
+use anyhow::{bail, Context, Result};
+use clap::Parser;
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+use nix::sys::termios::{self, Termios};
+use nix::libc;
+use terminal_size::{terminal_size, Height, Width};
+
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Read, Write};
+use std::os::fd::BorrowedFd;
+use std::os::unix::io::AsRawFd;
+use std::process::{Command, ExitStatus};
+use std::time::{Duration, Instant};
+
+const DEFAULT_LABELS: &str =
+    "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM";
+
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_DIM: &str = "\x1b[2m";
+
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+struct Cli {
+    #[arg(long)]
+    interactive: bool,
+    #[arg(long)]
+    pane_id: Option<String>,
+    #[arg(long)]
+    reverse_search: Option<String>,
+    #[arg(long)]
+    word_separators: Option<String>,
+    #[arg(long)]
+    case_sensitive: Option<String>,
+    #[arg(long)]
+    prompt_position: Option<String>,
+    #[arg(long)]
+    prompt_indicator: Option<String>,
+    #[arg(long)]
+    prompt_placeholder_text: Option<String>,
+    #[arg(long)]
+    highlight_colour: Option<String>,
+    #[arg(long)]
+    label_colour: Option<String>,
+    #[arg(long)]
+    prompt_colour: Option<String>,
+    #[arg(long)]
+    label_characters: Option<String>,
+    #[arg(long)]
+    auto_paste: Option<String>,
+    #[arg(long)]
+    idle_timeout: Option<u64>,
+    #[arg(long)]
+    idle_warning: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct Config {
+    reverse_search: bool,
+    case_sensitive: bool,
+    word_separators: Option<String>,
+    prompt_placeholder_text: String,
+    highlight_colour: String,
+    label_colour: String,
+    prompt_position: String,
+    prompt_indicator: String,
+    prompt_colour: String,
+    auto_paste_enable: bool,
+    label_characters: Option<String>,
+    idle_timeout: u64,
+    idle_warning: u64,
+}
+
+impl Config {
+    fn defaults() -> Self {
+        Self {
+            reverse_search: true,
+            case_sensitive: false,
+            word_separators: None,
+            prompt_placeholder_text: "search...".to_string(),
+            highlight_colour: "\x1b[1;33m".to_string(),
+            label_colour: "\x1b[1;32m".to_string(),
+            prompt_position: "bottom".to_string(),
+            prompt_indicator: ">".to_string(),
+            prompt_colour: "\x1b[1m".to_string(),
+            auto_paste_enable: true,
+            label_characters: None,
+            idle_timeout: 15,
+            idle_warning: 5,
+        }
+    }
+
+    fn from_tmux() -> Self {
+        let mut cfg = Self::defaults();
+        let global = read_tmux_options_global();
+
+        cfg.reverse_search = get_bool(&global, "@flash-copy-reverse-search", cfg.reverse_search);
+        cfg.case_sensitive = get_bool(&global, "@flash-copy-case-sensitive", cfg.case_sensitive);
+        cfg.prompt_placeholder_text = get_string(
+            &global,
+            "@flash-copy-prompt-placeholder-text",
+            &cfg.prompt_placeholder_text,
+        );
+        cfg.highlight_colour =
+            get_string(&global, "@flash-copy-highlight-colour", &cfg.highlight_colour);
+        cfg.label_colour = get_string(&global, "@flash-copy-label-colour", &cfg.label_colour);
+        cfg.prompt_position = get_choice(
+            &global,
+            "@flash-copy-prompt-position",
+            &["top", "bottom"],
+            &cfg.prompt_position,
+        );
+        cfg.prompt_indicator =
+            get_string(&global, "@flash-copy-prompt-indicator", &cfg.prompt_indicator);
+        cfg.prompt_colour =
+            get_string(&global, "@flash-copy-prompt-colour", &cfg.prompt_colour);
+        cfg.auto_paste_enable =
+            get_bool(&global, "@flash-copy-auto-paste", cfg.auto_paste_enable);
+        cfg.label_characters = get_optional_string(&global, "@flash-copy-label-characters");
+        cfg.idle_timeout = get_int(&global, "@flash-copy-idle-timeout", cfg.idle_timeout);
+        cfg.idle_warning = get_int(&global, "@flash-copy-idle-warning", cfg.idle_warning);
+
+        if let Some(separators) = get_optional_string(&global, "@flash-copy-word-separators") {
+            cfg.word_separators = Some(separators);
+        } else if let Some(word_sep) = read_tmux_word_separators() {
+            cfg.word_separators = Some(word_sep);
+        }
+
+        cfg
+    }
+
+    fn from_args(cli: &Cli) -> Self {
+        let mut cfg = Self::defaults();
+
+        if let Some(v) = &cli.reverse_search {
+            cfg.reverse_search = parse_bool(v);
+        }
+        if let Some(v) = &cli.case_sensitive {
+            cfg.case_sensitive = parse_bool(v);
+        }
+        if let Some(v) = &cli.word_separators {
+            cfg.word_separators = if v.is_empty() { None } else { Some(v.clone()) };
+        }
+        if let Some(v) = &cli.prompt_position {
+            cfg.prompt_position = v.clone();
+        }
+        if let Some(v) = &cli.prompt_indicator {
+            cfg.prompt_indicator = v.clone();
+        }
+        if let Some(v) = &cli.prompt_placeholder_text {
+            cfg.prompt_placeholder_text = v.clone();
+        }
+        if let Some(v) = &cli.highlight_colour {
+            cfg.highlight_colour = v.clone();
+        }
+        if let Some(v) = &cli.label_colour {
+            cfg.label_colour = v.clone();
+        }
+        if let Some(v) = &cli.prompt_colour {
+            cfg.prompt_colour = v.clone();
+        }
+        if let Some(v) = &cli.label_characters {
+            cfg.label_characters = if v.is_empty() { None } else { Some(v.clone()) };
+        }
+        if let Some(v) = &cli.auto_paste {
+            cfg.auto_paste_enable = parse_bool(v);
+        }
+        if let Some(v) = cli.idle_timeout {
+            cfg.idle_timeout = v;
+        }
+        if let Some(v) = cli.idle_warning {
+            cfg.idle_warning = v;
+        }
+
+        cfg
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SearchMatch {
+    text: String,
+    start_pos: usize,
+    end_pos: usize,
+    line: usize,
+    col: usize,
+    label: Option<char>,
+    match_start: usize,
+    match_end: usize,
+    copy_text: String,
+}
+
+#[derive(Debug)]
+struct SearchInterface {
+    pane_content: String,
+    lines: Vec<String>,
+    reverse_search: bool,
+    word_separators: Option<String>,
+    case_sensitive: bool,
+    label_characters: String,
+    search_query: String,
+    matches: Vec<SearchMatch>,
+}
+
+impl SearchInterface {
+    fn new(
+        pane_content: String,
+        reverse_search: bool,
+        word_separators: Option<String>,
+        case_sensitive: bool,
+        label_characters: Option<String>,
+    ) -> Self {
+        let lines = pane_content.split('\n').map(|s| s.to_string()).collect();
+        Self {
+            pane_content,
+            lines,
+            reverse_search,
+            word_separators,
+            case_sensitive,
+            label_characters: label_characters.unwrap_or_else(|| DEFAULT_LABELS.to_string()),
+            search_query: String::new(),
+            matches: Vec::new(),
+        }
+    }
+
+    fn search(&mut self, query: &str) -> Vec<SearchMatch> {
+        self.search_query = if self.case_sensitive {
+            query.to_string()
+        } else {
+            query.to_lowercase()
+        };
+
+        if query.is_empty() {
+            self.matches.clear();
+            return Vec::new();
+        }
+
+        let mut matches = Vec::new();
+        let mut pos = 0usize;
+        let query_cmp = if self.case_sensitive {
+            query.to_string()
+        } else {
+            query.to_lowercase()
+        };
+
+        let separators = self
+            .word_separators
+            .as_ref()
+            .map(|s| s.chars().collect::<HashSet<char>>());
+
+        for (line_idx, line) in self.lines.iter().enumerate() {
+            for (seq_start, seq_end) in find_sequences(line) {
+                let sequence = &line[seq_start..seq_end];
+                let sequence_cmp = if self.case_sensitive {
+                    sequence.to_string()
+                } else {
+                    sequence.to_lowercase()
+                };
+
+                if !sequence_cmp.contains(&query_cmp) {
+                    continue;
+                }
+
+                let mut search_pos = 0usize;
+                while let Some(found) = sequence_cmp[search_pos..].find(&query_cmp) {
+                    let match_pos = search_pos + found;
+                    let match_end = match_pos + query_cmp.len();
+
+                    let copy_text = determine_copy_text(sequence, match_pos, &separators);
+
+                    matches.push(SearchMatch {
+                        text: sequence.to_string(),
+                        start_pos: pos + seq_start,
+                        end_pos: pos + seq_end,
+                        line: line_idx,
+                        col: seq_start,
+                        label: None,
+                        match_start: match_pos,
+                        match_end,
+                        copy_text,
+                    });
+
+                    search_pos = match_pos + 1;
+                    if search_pos >= sequence_cmp.len() {
+                        break;
+                    }
+                }
+            }
+
+            pos += line.len() + 1;
+        }
+
+        let mut seen = HashSet::new();
+        let mut unique = Vec::new();
+        for m in matches {
+            let key = (m.start_pos, m.match_start, m.text.clone());
+            if seen.insert(key) {
+                unique.push(m);
+            }
+        }
+
+        unique.sort_by_key(|m| m.start_pos);
+        if self.reverse_search {
+            unique.reverse();
+        }
+
+        assign_labels(&mut unique, &self.search_query, &self.label_characters, self.case_sensitive);
+
+        self.matches = unique.clone();
+        unique
+    }
+
+    fn get_match_by_label(&self, label: char) -> Option<&SearchMatch> {
+        self.matches.iter().find(|m| m.label == Some(label))
+    }
+
+    fn get_matches_at_line(&self, line_num: usize) -> Vec<&SearchMatch> {
+        self.matches
+            .iter()
+            .filter(|m| m.line == line_num)
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PaneDimensions {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    width: i32,
+    height: i32,
+}
+
+struct InteractiveUI {
+    pane_id: String,
+    pane_content: String,
+    pane_content_plain: String,
+    config: Config,
+    search: SearchInterface,
+    search_query: String,
+    current_matches: Vec<SearchMatch>,
+    autopaste_modifier_active: bool,
+    start_time: Instant,
+    timeout_warning_shown: bool,
+}
+
+impl InteractiveUI {
+    fn new(pane_id: String, pane_content: String, config: Config) -> Self {
+        let pane_content_plain = strip_ansi_codes(&pane_content);
+        let search = SearchInterface::new(
+            pane_content_plain.clone(),
+            config.reverse_search,
+            config.word_separators.clone(),
+            config.case_sensitive,
+            config.label_characters.clone(),
+        );
+
+        Self {
+            pane_id,
+            pane_content,
+            pane_content_plain,
+            config,
+            search,
+            search_query: String::new(),
+            current_matches: Vec::new(),
+            autopaste_modifier_active: false,
+            start_time: Instant::now(),
+            timeout_warning_shown: false,
+        }
+    }
+
+    fn run(&mut self) -> Result<()> {
+        let _term_guard = TerminalModeGuard::new()?;
+
+        self.start_time = Instant::now();
+        self.display_content()?;
+
+        loop {
+            let elapsed = self.start_time.elapsed().as_secs();
+            if elapsed >= self.config.idle_timeout {
+                self.save_result("", false)?;
+                return Ok(());
+            }
+
+            let warning_threshold = self.config.idle_timeout.saturating_sub(self.config.idle_warning);
+            if !self.timeout_warning_shown
+                && self.config.idle_warning < self.config.idle_timeout
+                && elapsed >= warning_threshold
+            {
+                self.timeout_warning_shown = true;
+                self.display_content()?;
+            }
+
+            let input = read_char_timeout(Duration::from_millis(100))?;
+            let Some(ch) = input else {
+                continue;
+            };
+
+            self.start_time = Instant::now();
+            self.timeout_warning_shown = false;
+
+            match ch {
+                InputChar::CtrlC => {
+                    self.save_result("", false)?;
+                    return Ok(());
+                }
+                InputChar::Esc => {
+                    if self.autopaste_modifier_active {
+                        continue;
+                    }
+                    self.save_result("", false)?;
+                    return Ok(());
+                }
+                InputChar::Char(';') | InputChar::Char(':') => {
+                    if self.config.auto_paste_enable {
+                        self.autopaste_modifier_active = true;
+                        continue;
+                    }
+                    self.autopaste_modifier_active = false;
+                    self.update_search(format!("{}{}", self.search_query, ch.as_char()))?;
+                }
+                InputChar::CtrlU => {
+                    self.autopaste_modifier_active = false;
+                    self.update_search(String::new())?;
+                }
+                InputChar::CtrlW => {
+                    self.autopaste_modifier_active = false;
+                    let new_query = delete_prev_word(&self.search_query);
+                    self.update_search(new_query)?;
+                }
+                InputChar::Backspace => {
+                    self.autopaste_modifier_active = false;
+                    if !self.search_query.is_empty() {
+                        let mut new_query = self.search_query.clone();
+                        new_query.pop();
+                        self.update_search(new_query)?;
+                    }
+                }
+                InputChar::Enter => {
+                    if let Some(first) = self.current_matches.first() {
+                        let should_paste = self.autopaste_modifier_active;
+                        self.save_result(&first.copy_text, should_paste)?;
+                        return Ok(());
+                    }
+                }
+                InputChar::Char(c) => {
+                    if !self.search_query.is_empty() {
+                        if let Some(match_item) = self.search.get_match_by_label(c) {
+                            let should_paste = self.autopaste_modifier_active;
+                            self.save_result(&match_item.copy_text, should_paste)?;
+                            return Ok(());
+                        }
+                    }
+
+                    if c.is_ascii_graphic() || c == ' ' {
+                        let mut new_query = self.search_query.clone();
+                        new_query.push(c);
+                        self.update_search(new_query)?;
+                    }
+                }
+            }
+        }
+    }
+
+    fn update_search(&mut self, new_query: String) -> Result<()> {
+        self.search_query = new_query;
+        self.current_matches = self.search.search(&self.search_query);
+        self.display_content()
+    }
+
+    fn display_content(&self) -> Result<()> {
+        let mut out = io::stderr();
+        out.write_all(b"\x1b[2J\x1b[H")?;
+
+        let lines: Vec<&str> = self.pane_content.trim_end_matches('\n').split('\n').collect();
+        let lines_plain: Vec<&str> =
+            self.pane_content_plain.trim_end_matches('\n').split('\n').collect();
+
+        let (width, height) = terminal_size()
+            .map(|(Width(w), Height(h))| (w as usize, h as usize))
+            .unwrap_or((80, 40));
+
+        let available_height = height.saturating_sub(1);
+        let mut lines = lines;
+        let mut lines_plain = lines_plain;
+
+        if !lines.is_empty() {
+            lines.pop();
+            lines_plain.pop();
+        }
+
+        if lines.len() > available_height {
+            lines.truncate(available_height);
+            lines_plain.truncate(available_height);
+        }
+
+        if self.config.prompt_position == "top" {
+            let prompt = self.build_search_bar_output(width);
+            out.write_all(prompt.as_bytes())?;
+            out.write_all(b"\n")?;
+            out.write_all(format!("\x1b[2;{}r", height).as_bytes())?;
+            out.write_all(b"\x1b[2;1H")?;
+        } else {
+            let scroll_bottom = height.saturating_sub(1);
+            out.write_all(format!("\x1b[1;{}r", scroll_bottom).as_bytes())?;
+            out.write_all(b"\x1b[1;1H")?;
+        }
+
+        self.display_pane_content(&mut out, &lines, &lines_plain, available_height)?;
+
+        if self.config.prompt_position == "top" {
+            let cursor_col = self.prompt_cursor_column().max(1);
+            out.write_all(format!("\x1b[1;{}H", cursor_col).as_bytes())?;
+        } else {
+            let prompt = self.build_search_bar_output(width);
+            out.write_all(format!("\x1b[{};1H", height).as_bytes())?;
+            out.write_all(prompt.as_bytes())?;
+
+            let cursor_col = self.prompt_cursor_column();
+            out.write_all(format!("\x1b[{}G", cursor_col).as_bytes())?;
+        }
+
+        out.flush()?;
+        Ok(())
+    }
+
+    fn prompt_cursor_column(&self) -> usize {
+        let mut col = self.config.prompt_indicator.len() + 2;
+        if !self.search_query.is_empty() {
+            col += self.search_query.len();
+        }
+        col
+    }
+
+    fn display_pane_content(
+        &self,
+        out: &mut io::Stderr,
+        lines: &[&str],
+        lines_plain: &[&str],
+        available_height: usize,
+    ) -> Result<()> {
+        let mut printed = 0usize;
+        let total_lines = lines.len().min(available_height);
+
+        for (line_idx, (line, line_plain)) in lines.iter().zip(lines_plain).enumerate() {
+            if printed >= available_height {
+                break;
+            }
+
+            let matches = self.search.get_matches_at_line(line_idx);
+            let is_last_line = printed == total_lines.saturating_sub(1);
+
+            let output = if matches.is_empty() {
+                if self.search_query.is_empty() {
+                    line.to_string()
+                } else {
+                    dim_coloured_line(line)
+                }
+            } else {
+                let dimmed = if self.search_query.is_empty() {
+                    line.to_string()
+                } else {
+                    dim_coloured_line(line)
+                };
+                display_line_with_matches(
+                    &dimmed,
+                    line_plain,
+                    &matches,
+                    &self.config,
+                )
+            };
+
+            if is_last_line {
+                out.write_all(output.as_bytes())?;
+            } else {
+                out.write_all(output.as_bytes())?;
+                out.write_all(b"\n")?;
+            }
+
+            printed += 1;
+        }
+
+        Ok(())
+    }
+
+    fn build_search_bar_output(&self, term_width: usize) -> String {
+        let mut base = String::new();
+        if !self.search_query.is_empty() {
+            base.push_str(&self.config.prompt_colour);
+            base.push_str(&self.config.prompt_indicator);
+            base.push_str(ANSI_RESET);
+            base.push(' ');
+            base.push_str(&self.search_query);
+        } else {
+            base.push_str(&self.config.prompt_colour);
+            base.push_str(&self.config.prompt_indicator);
+            base.push_str(ANSI_RESET);
+            base.push(' ');
+            base.push_str(ANSI_DIM);
+            base.push_str(&self.config.prompt_placeholder_text);
+            base.push_str(ANSI_RESET);
+        }
+
+        if self.timeout_warning_shown {
+            let remaining = self
+                .config
+                .idle_timeout
+                .saturating_sub(self.start_time.elapsed().as_secs());
+            let warning_text = format!("Idle, terminating in {}s...", remaining);
+            let base_len = visible_length(&base);
+            let warning_len = warning_text.len();
+            if base_len + warning_len + 3 < term_width {
+                let padding = term_width - base_len - warning_len - 1;
+                base.push_str(&" ".repeat(padding));
+                base.push_str("\x1b[1m\x1b[33m");
+                base.push_str(&warning_text);
+                base.push_str(ANSI_RESET);
+            }
+        }
+
+        base
+    }
+
+    fn save_result(&self, text: &str, should_paste: bool) -> Result<()> {
+        let buffer = format!("__flash_copy_result_{}__", self.pane_id);
+        tmux_run_quiet(&[
+            "set-buffer",
+            "-b",
+            &buffer,
+            "--",
+            text,
+        ]);
+        std::process::exit(if should_paste { 10 } else { 0 });
+    }
+}
+
+struct TerminalModeGuard {
+    original: Option<Termios>,
+}
+
+impl TerminalModeGuard {
+    fn new() -> Result<Self> {
+        let fd = io::stdin().as_raw_fd();
+        if unsafe { libc::isatty(fd) } == 0 {
+            return Ok(Self { original: None });
+        }
+
+        let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let original = termios::tcgetattr(fd_borrowed).context("failed to get termios")?;
+        let mut raw = original.clone();
+        termios::cfmakeraw(&mut raw);
+        let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        termios::tcsetattr(fd_borrowed, termios::SetArg::TCSADRAIN, &raw)
+            .context("failed to set raw mode")?;
+        Ok(Self {
+            original: Some(original),
+        })
+    }
+}
+
+impl Drop for TerminalModeGuard {
+    fn drop(&mut self) {
+        let fd = io::stdin().as_raw_fd();
+        if let Some(original) = &self.original {
+            let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+            let _ = termios::tcsetattr(fd_borrowed, termios::SetArg::TCSADRAIN, original);
+        }
+        let mut out = io::stderr();
+        let _ = out.write_all(b"\x1b[r\x1b[2J\x1b[H");
+        let _ = out.flush();
+    }
+}
+
+#[derive(Debug)]
+enum InputChar {
+    Char(char),
+    CtrlC,
+    CtrlU,
+    CtrlW,
+    Backspace,
+    Enter,
+    Esc,
+}
+
+impl InputChar {
+    fn as_char(&self) -> char {
+        match self {
+            InputChar::Char(c) => *c,
+            _ => '\0',
+        }
+    }
+}
+
+fn read_char_timeout(timeout: Duration) -> Result<Option<InputChar>> {
+    let fd = io::stdin().as_raw_fd();
+    let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
+    let timeout_ms = timeout.as_millis().min(u16::MAX as u128) as u16;
+    let res = poll(&mut fds, PollTimeout::from(timeout_ms)).context("poll failed")?;
+    if res == 0 {
+        return Ok(None);
+    }
+
+    let mut buf = [0u8; 1];
+    let mut stdin = io::stdin();
+    stdin.read_exact(&mut buf)?;
+    let byte = buf[0];
+
+    match byte {
+        0x03 => Ok(Some(InputChar::CtrlC)),
+        0x15 => Ok(Some(InputChar::CtrlU)),
+        0x17 => Ok(Some(InputChar::CtrlW)),
+        0x7f | 0x08 => Ok(Some(InputChar::Backspace)),
+        b'\n' | b'\r' => Ok(Some(InputChar::Enter)),
+        0x1b => {
+            if is_escape_sequence()? {
+                Ok(None)
+            } else {
+                Ok(Some(InputChar::Esc))
+            }
+        }
+        _ => Ok(Some(InputChar::Char(byte as char))),
+    }
+}
+
+fn is_escape_sequence() -> Result<bool> {
+    let fd = io::stdin().as_raw_fd();
+    let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
+    let res = poll(&mut fds, PollTimeout::from(0u8))?;
+    if res == 0 {
+        return Ok(false);
+    }
+
+    let mut buf = [0u8; 1];
+    let mut stdin = io::stdin();
+    stdin.read_exact(&mut buf)?;
+    let next = buf[0];
+    if next == b'[' || next == b'O' {
+        drain_escape_sequence()?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn drain_escape_sequence() -> Result<()> {
+    let fd = io::stdin().as_raw_fd();
+    let mut buf = [0u8; 8];
+    loop {
+        let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
+        let res = poll(&mut fds, PollTimeout::from(0u8))?;
+        if res == 0 {
+            break;
+        }
+        let mut stdin = io::stdin();
+        let _ = stdin.read(&mut buf)?;
+    }
+    Ok(())
+}
+
+fn delete_prev_word(input: &str) -> String {
+    let delimiters: HashSet<char> = " \t-_.,;:!?/\\()[]{}".chars().collect();
+    let mut chars: Vec<char> = input.chars().collect();
+
+    while let Some(&c) = chars.last() {
+        if c.is_whitespace() {
+            chars.pop();
+        } else {
+            break;
+        }
+    }
+
+    while let Some(&c) = chars.last() {
+        if delimiters.contains(&c) {
+            chars.pop();
+        } else {
+            break;
+        }
+    }
+
+    while let Some(&c) = chars.last() {
+        if !delimiters.contains(&c) {
+            chars.pop();
+        } else {
+            break;
+        }
+    }
+
+    chars.into_iter().collect()
+}
+
+fn dim_coloured_line(line: &str) -> String {
+    if line.starts_with(ANSI_DIM) {
+        return line.to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str(ANSI_DIM);
+    out.push_str(&line.replace(ANSI_RESET, &format!("{}{}", ANSI_RESET, ANSI_DIM)));
+    if !line.ends_with(ANSI_RESET) {
+        out.push_str(ANSI_RESET);
+    }
+    out
+}
+
+fn display_line_with_matches(
+    display_line: &str,
+    line_plain: &str,
+    matches: &[&SearchMatch],
+    config: &Config,
+) -> String {
+    let mut display = display_line.to_string();
+    let mut cache_line_id = 0usize;
+    let mut pos_cache: HashMap<(usize, usize), usize> = HashMap::new();
+
+    let mut ordered = matches.to_vec();
+    ordered.sort_by(|a, b| b.col.cmp(&a.col));
+
+    for m in ordered {
+        let Some(label) = m.label else { continue };
+
+        let word_start = m.col;
+        let plain_match_start = word_start + m.match_start;
+        let plain_match_end = word_start + m.match_end;
+        let plain_replace_index = plain_match_end;
+
+        let coloured_replace_start = map_position_to_coloured(&display, plain_replace_index, &mut pos_cache, cache_line_id);
+        let coloured_skip_len = advance_plain_chars(&display[coloured_replace_start..], 1);
+        let coloured_label = format!("{}{}{}", config.label_colour, label, ANSI_RESET);
+
+        if plain_replace_index < line_plain.len() {
+            let mut new = String::new();
+            new.push_str(&display[..coloured_replace_start]);
+            new.push_str(&coloured_label);
+            new.push_str(&display[coloured_replace_start + coloured_skip_len..]);
+            display = new;
+        } else {
+            let mut new = String::new();
+            new.push_str(&display[..coloured_replace_start]);
+            new.push_str(&coloured_label);
+            new.push_str(&display[coloured_replace_start..]);
+            display = new;
+        }
+
+        cache_line_id += 1;
+
+        let coloured_match_start = map_position_to_coloured(&display, plain_match_start, &mut pos_cache, cache_line_id);
+        let coloured_match_end = map_position_to_coloured(&display, plain_match_end, &mut pos_cache, cache_line_id);
+        let plain_matched_part = &m.text[m.match_start..m.match_end];
+
+        let before = display[..coloured_match_start].to_string();
+        let after = display[coloured_match_end..].to_string();
+        let highlighted = format!("{}{}{}{}", ANSI_RESET, config.highlight_colour, plain_matched_part, ANSI_RESET);
+        display = format!("{}{}{}", before, highlighted, after);
+
+        cache_line_id += 1;
+    }
+
+    display
+}
+
+fn map_position_to_coloured(
+    coloured_text: &str,
+    plain_pos: usize,
+    cache: &mut HashMap<(usize, usize), usize>,
+    line_id: usize,
+) -> usize {
+    if let Some(v) = cache.get(&(line_id, plain_pos)) {
+        return *v;
+    }
+
+    let bytes = coloured_text.as_bytes();
+    let mut coloured_idx = 0usize;
+    let mut plain_idx = 0usize;
+
+    while plain_idx < plain_pos && coloured_idx < bytes.len() {
+        if bytes[coloured_idx] == 0x1b && coloured_idx + 1 < bytes.len() && bytes[coloured_idx + 1] == b'[' {
+            coloured_idx += 2;
+            while coloured_idx < bytes.len() && bytes[coloured_idx] != b'm' {
+                coloured_idx += 1;
+            }
+            if coloured_idx < bytes.len() {
+                coloured_idx += 1;
+            }
+        } else {
+            coloured_idx += 1;
+            plain_idx += 1;
+        }
+    }
+
+    cache.insert((line_id, plain_pos), coloured_idx);
+    coloured_idx
+}
+
+fn advance_plain_chars(coloured_text: &str, count: usize) -> usize {
+    let bytes = coloured_text.as_bytes();
+    let mut coloured_idx = 0usize;
+    let mut plain_idx = 0usize;
+
+    while plain_idx < count && coloured_idx < bytes.len() {
+        if bytes[coloured_idx] == 0x1b && coloured_idx + 1 < bytes.len() && bytes[coloured_idx + 1] == b'[' {
+            coloured_idx += 2;
+            while coloured_idx < bytes.len() && bytes[coloured_idx] != b'm' {
+                coloured_idx += 1;
+            }
+            if coloured_idx < bytes.len() {
+                coloured_idx += 1;
+            }
+        } else {
+            coloured_idx += 1;
+            plain_idx += 1;
+        }
+    }
+
+    coloured_idx
+}
+
+fn visible_length(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut idx = 0usize;
+    let mut visible = 0usize;
+
+    while idx < bytes.len() {
+        if bytes[idx] == 0x1b && idx + 1 < bytes.len() && bytes[idx + 1] == b'[' {
+            idx += 2;
+            while idx < bytes.len() && bytes[idx] != b'm' {
+                idx += 1;
+            }
+            if idx < bytes.len() {
+                idx += 1;
+            }
+        } else {
+            idx += 1;
+            visible += 1;
+        }
+    }
+
+    visible
+}
+
+fn strip_ansi_codes(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut idx = 0usize;
+
+    while idx < bytes.len() {
+        if bytes[idx] == 0x1b && idx + 1 < bytes.len() && bytes[idx + 1] == b'[' {
+            idx += 2;
+            while idx < bytes.len() && bytes[idx] != b'm' {
+                idx += 1;
+            }
+            if idx < bytes.len() {
+                idx += 1;
+            }
+        } else {
+            out.push(bytes[idx] as char);
+            idx += 1;
+        }
+    }
+
+    out
+}
+
+fn find_sequences(line: &str) -> Vec<(usize, usize)> {
+    let mut sequences = Vec::new();
+    let mut in_seq = false;
+    let mut start = 0usize;
+
+    for (idx, ch) in line.char_indices() {
+        if ch.is_whitespace() {
+            if in_seq {
+                sequences.push((start, idx));
+                in_seq = false;
+            }
+        } else if !in_seq {
+            start = idx;
+            in_seq = true;
+        }
+    }
+
+    if in_seq {
+        sequences.push((start, line.len()));
+    }
+
+    sequences
+}
+
+fn determine_copy_text(
+    sequence: &str,
+    match_pos: usize,
+    separators: &Option<HashSet<char>>,
+) -> String {
+    let Some(sep) = separators else {
+        return sequence.to_string();
+    };
+
+    let segments = split_by_separators(sequence, sep);
+    if segments.is_empty() {
+        return sequence.to_string();
+    }
+
+    for (start, end) in &segments {
+        if *start <= match_pos && match_pos < *end {
+            return sequence[*start..*end].to_string();
+        }
+        if *start > match_pos {
+            return sequence[*start..*end].to_string();
+        }
+    }
+
+    let (start, end) = segments
+        .iter()
+        .max_by_key(|(s, e)| e - s)
+        .copied()
+        .unwrap();
+    sequence[start..end].to_string()
+}
+
+fn split_by_separators(sequence: &str, separators: &HashSet<char>) -> Vec<(usize, usize)> {
+    let mut segments = Vec::new();
+    let mut in_seg = false;
+    let mut start = 0usize;
+
+    for (idx, ch) in sequence.char_indices() {
+        if separators.contains(&ch) {
+            if in_seg {
+                segments.push((start, idx));
+                in_seg = false;
+            }
+        } else if !in_seg {
+            start = idx;
+            in_seg = true;
+        }
+    }
+
+    if in_seg {
+        segments.push((start, sequence.len()));
+    }
+
+    segments
+}
+
+fn assign_labels(
+    matches: &mut [SearchMatch],
+    query: &str,
+    label_chars: &str,
+    case_sensitive: bool,
+) {
+    let query_chars: HashSet<char> = if case_sensitive {
+        query.chars().collect()
+    } else {
+        query.to_lowercase().chars().collect()
+    };
+
+    let mut continuation_chars = HashSet::new();
+    for m in matches.iter() {
+        if m.match_end < m.text.len() {
+            let next = m.text[m.match_end..].chars().next().unwrap_or('\0');
+            continuation_chars.insert(if case_sensitive { next } else { next.to_ascii_lowercase() });
+        }
+    }
+
+    let mut used = HashSet::new();
+
+    for m in matches.iter_mut() {
+        let match_chars: HashSet<char> = if case_sensitive {
+            m.text.chars().collect()
+        } else {
+            m.text.to_lowercase().chars().collect()
+        };
+
+        let mut label = None;
+        for c in label_chars.chars() {
+            if used.contains(&c) {
+                continue;
+            }
+            let c_cmp = if case_sensitive { c } else { c.to_ascii_lowercase() };
+            if query_chars.contains(&c_cmp)
+                || continuation_chars.contains(&c_cmp)
+                || match_chars.contains(&c_cmp)
+            {
+                continue;
+            }
+            label = Some(c);
+            used.insert(c);
+            break;
+        }
+
+        m.label = label;
+    }
+}
+
+fn get_tmux_pane_id() -> Result<String> {
+    tmux_output(&["display-message", "-p", "#{pane_id}"])
+        .context("failed to get pane id")
+}
+
+fn capture_pane(pane_id: &str) -> Result<String> {
+    tmux_output_trim(
+        &["capture-pane", "-p", "-e", "-J", "-t", pane_id],
+        TrimMode::None,
+    )
+    .context("failed to capture pane")
+}
+
+fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
+    let out = tmux_output(&[
+        "display-message",
+        "-t",
+        pane_id,
+        "-p",
+        "#{pane_left} #{pane_top} #{pane_right} #{pane_bottom} #{pane_width} #{pane_height}",
+    ])
+    .ok()?;
+
+    let parts: Vec<i32> = out
+        .split_whitespace()
+        .filter_map(|p| p.parse::<i32>().ok())
+        .collect();
+    if parts.len() != 6 {
+        return None;
+    }
+
+    Some(PaneDimensions {
+        left: parts[0],
+        top: parts[1],
+        right: parts[2],
+        bottom: parts[3],
+        width: parts[4],
+        height: parts[5],
+    })
+}
+
+fn calculate_popup_position(dimensions: &PaneDimensions) -> (i32, i32, i32, i32) {
+    let y = if dimensions.top == 0 {
+        dimensions.top
+    } else {
+        dimensions.bottom + 1
+    };
+    (dimensions.left, y, dimensions.width, dimensions.height)
+}
+
+fn tmux_output(args: &[&str]) -> Result<String> {
+    tmux_output_trim(args, TrimMode::Trim)
+}
+
+fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
+    let output = Command::new("tmux").args(args).output()?;
+    if !output.status.success() {
+        bail!("tmux command failed");
+    }
+    let mut out = String::from_utf8_lossy(&output.stdout).to_string();
+    match trim {
+        TrimMode::Trim => {
+            out = out.trim().to_string();
+        }
+        TrimMode::TrimNewlines => {
+            out = out.trim_end_matches(['\n', '\r']).to_string();
+        }
+        TrimMode::None => {}
+    }
+    Ok(out)
+}
+
+fn tmux_run_quiet(args: &[&str]) -> bool {
+    Command::new("tmux").args(args).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+fn read_tmux_options_global() -> HashMap<String, String> {
+    let output = tmux_output_trim(&["show-options", "-g"], TrimMode::None).unwrap_or_default();
+    parse_tmux_options(&output)
+}
+
+fn read_tmux_word_separators() -> Option<String> {
+    let output = tmux_output_trim(
+        &["show-window-option", "-gv", "word-separators"],
+        TrimMode::TrimNewlines,
+    )
+    .ok()?;
+    if output.is_empty() {
+        return None;
+    }
+    if output.starts_with('"') && output.ends_with('"') {
+        return Some(unescape_tmux_value(&output[1..output.len() - 1]));
+    }
+    Some(unescape_tmux_value(&output))
+}
+
+fn parse_tmux_options(output: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in output.lines() {
+        if let Some((key, value)) = line.split_once(' ') {
+            let mut value = value.trim().to_string();
+            if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+                value = value[1..value.len() - 1].to_string();
+                value = unescape_tmux_value(&value);
+            }
+            map.insert(key.to_string(), value);
+        }
+    }
+    map
+}
+
+fn unescape_tmux_value(value: &str) -> String {
+    let mut out = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('e') => out.push('\x1b'),
+            Some('x') => {
+                let hi = chars.next();
+                let lo = chars.next();
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    if let Ok(v) = u8::from_str_radix(&format!("{}{}", hi, lo), 16) {
+                        out.push(v as char);
+                    }
+                }
+            }
+            Some(first @ '0'..='7') => {
+                let mut octal = String::new();
+                octal.push(first);
+                for _ in 0..2 {
+                    if let Some(&next) = chars.peek() {
+                        if ('0'..='7').contains(&next) {
+                            octal.push(next);
+                            chars.next();
+                        }
+                    }
+                }
+                if let Ok(v) = u8::from_str_radix(&octal, 8) {
+                    out.push(v as char);
+                }
+            }
+            Some(other) => out.push(other),
+            None => break,
+        }
+    }
+    out
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(value.to_lowercase().as_str(), "on" | "true" | "1" | "yes")
+}
+
+fn get_bool(map: &HashMap<String, String>, key: &str, default: bool) -> bool {
+    map.get(key).map(|v| parse_bool(v)).unwrap_or(default)
+}
+
+fn get_string(map: &HashMap<String, String>, key: &str, default: &str) -> String {
+    map.get(key).cloned().unwrap_or_else(|| default.to_string())
+}
+
+fn get_optional_string(map: &HashMap<String, String>, key: &str) -> Option<String> {
+    map.get(key).cloned().filter(|v| !v.is_empty())
+}
+
+fn get_choice(map: &HashMap<String, String>, key: &str, choices: &[&str], default: &str) -> String {
+    if let Some(value) = map.get(key) {
+        for choice in choices {
+            if choice.eq_ignore_ascii_case(value) {
+                return choice.to_string();
+            }
+        }
+    }
+    default.to_string()
+}
+
+fn get_int(map: &HashMap<String, String>, key: &str, default: u64) -> u64 {
+    map.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+enum TrimMode {
+    Trim,
+    TrimNewlines,
+    None,
+}
+
+struct Clipboard;
+
+impl Clipboard {
+    fn copy(text: &str) -> bool {
+        if std::env::var_os("TMUX").is_none() {
+            return false;
+        }
+        if tmux_run_quiet(&["set-buffer", "-w", "--", text]) {
+            return true;
+        }
+
+        if cfg!(target_os = "macos") {
+            return run_with_input("pbcopy", &[], text);
+        }
+
+        if cfg!(target_os = "linux") {
+            if run_with_input("xclip", &["-selection", "clipboard"], text) {
+                return true;
+            }
+            if run_with_input("xsel", &["--clipboard", "--input"], text) {
+                return true;
+            }
+        }
+
+        tmux_run_quiet(&["set-buffer", "--", text])
+    }
+
+    fn copy_and_paste(text: &str, pane_id: &str, auto_paste: bool) {
+        if !Self::copy(text) {
+            return;
+        }
+
+        if auto_paste {
+            let _ = tmux_run_quiet(&["set-buffer", "-b", "flash-paste", "--", text]);
+            let _ = tmux_run_quiet(&["paste-buffer", "-b", "flash-paste", "-t", pane_id]);
+        }
+    }
+}
+
+fn run_with_input(cmd: &str, args: &[&str], input: &str) -> bool {
+    Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .and_then(|mut child| {
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(input.as_bytes())?;
+            }
+            child.wait()
+        })
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn run_parent() -> Result<()> {
+    let pane_id = get_tmux_pane_id()?;
+    let pane_content = capture_pane(&pane_id).unwrap_or_default();
+    let config = Config::from_tmux();
+
+    let pane_buffer = format!("__flash_copy_pane_content_{}__", pane_id);
+    let _ = tmux_run_quiet(&["set-buffer", "-b", &pane_buffer, "--", &pane_content]);
+
+    let (x, y, w, h) = if let Some(dimensions) = get_pane_dimensions(&pane_id) {
+        calculate_popup_position(&dimensions)
+    } else {
+        let fallback = tmux_output(&["display-message", "-p", "#{window_width},#{window_height}"])
+            .unwrap_or_else(|_| "160,40".to_string());
+        let mut parts = fallback.split(',');
+        let w = parts.next().and_then(|v| v.parse().ok()).unwrap_or(160);
+        let h = parts.next().and_then(|v| v.parse().ok()).unwrap_or(40);
+        (0, 0, w, h)
+    };
+
+    let exe = std::env::current_exe().context("failed to locate executable")?;
+    let exe = exe.to_string_lossy().to_string();
+
+    let mut args = Vec::new();
+    args.push("display-popup".to_string());
+    args.push("-E".to_string());
+    args.push("-B".to_string());
+    args.push("-x".to_string());
+    args.push(x.to_string());
+    args.push("-y".to_string());
+    args.push(y.to_string());
+    args.push("-w".to_string());
+    args.push(w.to_string());
+    args.push("-h".to_string());
+    args.push(h.to_string());
+    args.push(exe);
+    args.push("--interactive".to_string());
+    args.push("--pane-id".to_string());
+    args.push(pane_id.clone());
+    args.push("--reverse-search".to_string());
+    args.push(config.reverse_search.to_string());
+    args.push("--word-separators".to_string());
+    args.push(config.word_separators.clone().unwrap_or_default());
+    args.push("--case-sensitive".to_string());
+    args.push(config.case_sensitive.to_string());
+    args.push("--prompt-placeholder-text".to_string());
+    args.push(config.prompt_placeholder_text.clone());
+    args.push("--highlight-colour".to_string());
+    args.push(config.highlight_colour.clone());
+    args.push("--label-colour".to_string());
+    args.push(config.label_colour.clone());
+    args.push("--prompt-position".to_string());
+    args.push(config.prompt_position.clone());
+    args.push("--prompt-indicator".to_string());
+    args.push(config.prompt_indicator.clone());
+    args.push("--prompt-colour".to_string());
+    args.push(config.prompt_colour.clone());
+    args.push("--label-characters".to_string());
+    args.push(config.label_characters.clone().unwrap_or_default());
+    args.push("--auto-paste".to_string());
+    args.push(config.auto_paste_enable.to_string());
+    args.push("--idle-timeout".to_string());
+    args.push(config.idle_timeout.to_string());
+    args.push("--idle-warning".to_string());
+    args.push(config.idle_warning.to_string());
+
+    let status = run_tmux_status(&args)?;
+
+    let result_buffer = format!("__flash_copy_result_{}__", pane_id);
+    let result_text = tmux_output_trim(
+        &["show-buffer", "-b", &result_buffer],
+        TrimMode::TrimNewlines,
+    )
+    .ok()
+    .filter(|s| !s.is_empty());
+
+    let should_paste = status.code() == Some(10);
+    if let Some(text) = result_text {
+        Clipboard::copy_and_paste(&text, &pane_id, should_paste);
+    }
+
+    let _ = tmux_run_quiet(&["delete-buffer", "-b", &result_buffer]);
+    let _ = tmux_run_quiet(&["delete-buffer", "-b", &pane_buffer]);
+
+    Ok(())
+}
+
+fn run_tmux_status(args: &[String]) -> Result<ExitStatus> {
+    let status = Command::new("tmux").args(args).status()?;
+    Ok(status)
+}
+
+fn run_interactive(cli: Cli) -> Result<()> {
+    let pane_id = cli.pane_id.clone().context("pane-id is required in interactive mode")?;
+    let config = Config::from_args(&cli);
+
+    let pane_buffer = format!("__flash_copy_pane_content_{}__", pane_id);
+    let pane_content = tmux_output_trim(
+        &["show-buffer", "-b", &pane_buffer],
+        TrimMode::None,
+    )
+    .ok()
+    .unwrap_or_else(|| capture_pane(&pane_id).unwrap_or_default());
+
+    let mut ui = InteractiveUI::new(pane_id, pane_content, config);
+    ui.run()?;
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    if cli.interactive {
+        run_interactive(cli)
+    } else {
+        run_parent()
+    }
+}
