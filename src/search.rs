@@ -240,3 +240,86 @@ fn assign_labels(matches: &mut [SearchMatch], query: &str) {
         m.label = label;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_tokens_basic() {
+        let line = "  foo\tbar baz";
+        let tokens = find_tokens(line);
+        assert_eq!(tokens, vec![(2, 5), (6, 9), (10, 13)]);
+    }
+
+    #[test]
+    fn search_case_insensitive() {
+        let mut search = SearchInterface::new("Foo bar");
+        let matches = search.search("fo");
+        assert_eq!(matches.len(), 1);
+        let m = &matches[0];
+        assert_eq!(m.text, "Foo");
+        assert_eq!(m.line, 0);
+        assert_eq!(m.col, 0);
+        assert_eq!(m.match_start, 0);
+        assert_eq!(m.match_end, 2);
+        assert_eq!(m.label, Some('a'));
+    }
+
+    #[test]
+    fn search_ordering_is_reverse() {
+        let mut search = SearchInterface::new("abc abc");
+        let matches = search.search("a");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].col, 4);
+        assert_eq!(matches[1].col, 0);
+    }
+
+    #[test]
+    fn labels_avoid_query_and_match_chars() {
+        let mut search = SearchInterface::new("abc");
+        let matches = search.search("a");
+        let forbidden: HashSet<char> = ['a', 'b', 'c'].into_iter().collect();
+        for m in matches {
+            let label = m.label.expect("label assigned");
+            assert!(!forbidden.contains(&label));
+        }
+    }
+
+    #[test]
+    fn trim_wrapping_token_basic() {
+        let token = "(foo)";
+        let trimmed = trim_wrapping_token(token, 1, 4);
+        assert_eq!(trimmed, "foo");
+    }
+
+    #[test]
+    fn trim_wrapping_token_nested() {
+        let token = "(`foo`)";
+        let trimmed = trim_wrapping_token(token, 2, 5);
+        assert_eq!(trimmed, "foo");
+    }
+
+    #[test]
+    fn trim_wrapping_token_trailing_only() {
+        let token = "foo)";
+        let trimmed = trim_wrapping_token(token, 0, 3);
+        assert_eq!(trimmed, "foo");
+    }
+
+    #[test]
+    fn delete_prev_word_basic() {
+        assert_eq!(delete_prev_word("foo bar"), "foo ");
+    }
+
+    #[test]
+    fn delete_prev_word_trailing_spaces() {
+        assert_eq!(delete_prev_word("foo bar   "), "foo ");
+    }
+
+    #[test]
+    fn delete_prev_word_delimiters() {
+        assert_eq!(delete_prev_word("foo,bar"), "foo,");
+        assert_eq!(delete_prev_word("foo/bar"), "foo/");
+    }
+}
