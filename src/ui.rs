@@ -19,7 +19,6 @@ pub struct InteractiveUI {
 }
 
 impl InteractiveUI {
-    #[must_use]
     pub fn new(pane_id: String, pane_content: &str, config: Config) -> Self {
         let search = SearchInterface::new(pane_content);
 

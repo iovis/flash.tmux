@@ -12,7 +12,6 @@ pub struct Config {
 }
 
 impl Config {
-    #[must_use]
     pub fn defaults() -> Self {
         Self {
             prompt_placeholder_text: "search...".to_string(),
@@ -40,6 +39,7 @@ impl Config {
 }
 
 #[derive(Clone, Copy)]
+#[must_use]
 pub struct StyleSpec {
     fg: Option<Color>,
     bold: bool,
@@ -74,6 +74,7 @@ pub struct StyleSequences {
 }
 
 impl StyleSequences {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             reset: format!("{}", SetAttribute(Attribute::Reset)),

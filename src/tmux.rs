@@ -22,7 +22,6 @@ pub enum ForwardKey {
 }
 
 impl ExitAction {
-    #[must_use]
     pub fn exit_code(self) -> i32 {
         match self {
             ExitAction::Cancel | ExitAction::CopyOnly => 0,
@@ -32,7 +31,6 @@ impl ExitAction {
         }
     }
 
-    #[must_use]
     pub fn should_paste(self) -> bool {
         matches!(
             self,
@@ -40,7 +38,6 @@ impl ExitAction {
         )
     }
 
-    #[must_use]
     pub fn forward_key(self) -> Option<ForwardKey> {
         match self {
             ExitAction::PasteAndEnter => Some(ForwardKey::Enter),
@@ -49,7 +46,6 @@ impl ExitAction {
         }
     }
 
-    #[must_use]
     pub fn from_exit_code(code: Option<i32>) -> Self {
         match code {
             Some(EXIT_CODE_PASTE) => ExitAction::Paste,
@@ -86,7 +82,6 @@ pub fn capture_pane(pane_id: &str) -> Result<String> {
         .context("failed to capture pane")
 }
 
-#[must_use]
 pub fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
     let out = tmux_output_trim(
         &[
@@ -117,7 +112,6 @@ pub fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
     })
 }
 
-#[must_use]
 pub fn calculate_popup_position(dimensions: &PaneDimensions) -> (i32, i32, i32, i32) {
     let y = if dimensions.top == 0 {
         dimensions.top
@@ -145,7 +139,6 @@ pub fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
     Ok(out)
 }
 
-#[must_use]
 pub fn tmux_run_quiet(args: &[&str]) -> bool {
     Command::new("tmux")
         .args(args)
@@ -157,7 +150,6 @@ pub fn tmux_run_quiet(args: &[&str]) -> bool {
 pub struct Clipboard;
 
 impl Clipboard {
-    #[must_use]
     pub fn copy(text: &str) -> bool {
         if std::env::var_os("TMUX").is_none() {
             return false;
