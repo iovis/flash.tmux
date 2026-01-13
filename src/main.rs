@@ -210,14 +210,21 @@ impl InteractiveUI {
                 }
                 InputChar::Enter => {
                     if let Some(first) = self.current_matches.first() {
-                        self.save_result(&first.text, true)?;
+                        let text =
+                            trim_wrapping_token(&first.text, first.match_start, first.match_end);
+                        self.save_result(text, true)?;
                         return Ok(());
                     }
                 }
                 InputChar::Char(c) => {
                     if c == ' ' {
                         if let Some(first) = self.current_matches.first() {
-                            self.save_result(&first.text, true)?;
+                            let text = trim_wrapping_token(
+                                &first.text,
+                                first.match_start,
+                                first.match_end,
+                            );
+                            self.save_result(text, true)?;
                             return Ok(());
                         }
                         continue;
@@ -228,7 +235,12 @@ impl InteractiveUI {
                         && let Some(match_item) = self.search.get_match_by_label(label_lookup)
                     {
                         let should_paste = c.is_ascii_lowercase();
-                        self.save_result(&match_item.text, should_paste)?;
+                        let text = trim_wrapping_token(
+                            &match_item.text,
+                            match_item.match_start,
+                            match_item.match_end,
+                        );
+                        self.save_result(text, should_paste)?;
                         return Ok(());
                     }
 
@@ -649,6 +661,29 @@ fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
     left.iter()
         .zip(right)
         .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+fn trim_wrapping_token(token: &str, match_start: usize, match_end: usize) -> &str {
+    const WRAPPING_PAIRS: [(&str, &str); 6] = [
+        ("(", ")"),
+        ("[", "]"),
+        ("{", "}"),
+        ("\"", "\""),
+        ("'", "'"),
+        ("`", "`"),
+    ];
+
+    for (open, close) in WRAPPING_PAIRS {
+        if token.starts_with(open) && token.ends_with(close) {
+            let start = open.len();
+            let end = token.len().saturating_sub(close.len());
+            if start < end && match_start >= start && match_end <= end {
+                return &token[start..end];
+            }
+        }
+    }
+
+    token
 }
 
 fn visible_length(text: &str) -> usize {
