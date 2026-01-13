@@ -56,13 +56,11 @@ struct SearchMatch {
     label: Option<char>,
     match_start: usize,
     match_end: usize,
-    copy_text: String,
 }
 
 #[derive(Debug)]
 struct SearchInterface {
     lines: Vec<String>,
-    search_query: String,
     matches: Vec<SearchMatch>,
 }
 
@@ -71,14 +69,11 @@ impl SearchInterface {
         let lines = pane_content.split('\n').map(ToString::to_string).collect();
         Self {
             lines,
-            search_query: String::new(),
             matches: Vec::new(),
         }
     }
 
     fn search(&mut self, query: &str) -> Vec<SearchMatch> {
-        self.search_query = query.to_ascii_lowercase();
-
         if query.is_empty() {
             self.matches.clear();
             return Vec::new();
@@ -91,19 +86,19 @@ impl SearchInterface {
         let query_len = query_bytes.len();
 
         for (line_idx, line) in self.lines.iter().enumerate() {
-            for (seq_start, seq_end) in find_sequences(line) {
-                let sequence = &line[seq_start..seq_end];
-                let sequence_bytes = sequence.as_bytes();
-                if query_len == 0 || query_len > sequence_bytes.len() {
+            for (token_start, token_end) in find_tokens(line) {
+                let token = &line[token_start..token_end];
+                let token_bytes = token.as_bytes();
+                if query_len == 0 || query_len > token_bytes.len() {
                     continue;
                 }
 
-                for (match_pos, _) in sequence.char_indices() {
-                    if match_pos + query_len > sequence_bytes.len() {
+                for (match_pos, _) in token.char_indices() {
+                    if match_pos + query_len > token_bytes.len() {
                         break;
                     }
                     if !ascii_case_insensitive_eq(
-                        &sequence_bytes[match_pos..match_pos + query_len],
+                        &token_bytes[match_pos..match_pos + query_len],
                         query_bytes,
                     ) {
                         continue;
@@ -112,14 +107,13 @@ impl SearchInterface {
                     let match_end = match_pos + query_len;
 
                     matches.push(SearchMatch {
-                        text: sequence.to_string(),
-                        start_pos: pos + seq_start,
+                        text: token.to_string(),
+                        start_pos: pos + token_start,
                         line: line_idx,
-                        col: seq_start,
+                        col: token_start,
                         label: None,
                         match_start: match_pos,
                         match_end,
-                        copy_text: sequence.to_string(),
                     });
                 }
             }
@@ -139,7 +133,7 @@ impl SearchInterface {
         unique.sort_by_key(|m| m.start_pos);
         unique.reverse();
 
-        assign_labels(&mut unique, &self.search_query);
+        assign_labels(&mut unique, query);
 
         self.matches.clone_from(&unique);
         unique
@@ -221,14 +215,14 @@ impl InteractiveUI {
                 }
                 InputChar::Enter => {
                     if let Some(first) = self.current_matches.first() {
-                        self.save_result(&first.copy_text, true)?;
+                        self.save_result(&first.text, true)?;
                         return Ok(());
                     }
                 }
                 InputChar::Char(c) => {
                     if c == ' ' {
                         if let Some(first) = self.current_matches.first() {
-                            self.save_result(&first.copy_text, true)?;
+                            self.save_result(&first.text, true)?;
                             return Ok(());
                         }
                         continue;
@@ -239,7 +233,7 @@ impl InteractiveUI {
                         && let Some(match_item) = self.search.get_match_by_label(label_lookup)
                     {
                         let should_paste = c.is_ascii_lowercase();
-                        self.save_result(&match_item.copy_text, should_paste)?;
+                        self.save_result(&match_item.text, should_paste)?;
                         return Ok(());
                     }
 
@@ -746,28 +740,28 @@ fn ansi_sequence_len(bytes: &[u8], start: usize) -> usize {
     }
 }
 
-fn find_sequences(line: &str) -> Vec<(usize, usize)> {
-    let mut sequences = Vec::new();
-    let mut in_seq = false;
+fn find_tokens(line: &str) -> Vec<(usize, usize)> {
+    let mut tokens = Vec::new();
+    let mut in_token = false;
     let mut start = 0usize;
 
     for (idx, ch) in line.char_indices() {
         if ch.is_whitespace() {
-            if in_seq {
-                sequences.push((start, idx));
-                in_seq = false;
+            if in_token {
+                tokens.push((start, idx));
+                in_token = false;
             }
-        } else if !in_seq {
+        } else if !in_token {
             start = idx;
-            in_seq = true;
+            in_token = true;
         }
     }
 
-    if in_seq {
-        sequences.push((start, line.len()));
+    if in_token {
+        tokens.push((start, line.len()));
     }
 
-    sequences
+    tokens
 }
 
 fn assign_labels(matches: &mut [SearchMatch], query: &str) {
