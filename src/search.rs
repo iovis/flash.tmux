@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 
-const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
-
 #[derive(Clone, Debug)]
 pub struct SearchMatch {
     pub text: String,
@@ -16,14 +14,16 @@ pub struct SearchMatch {
 pub struct SearchInterface {
     pub lines: Vec<String>,
     matches: Vec<SearchMatch>,
+    label_chars: String,
 }
 
 impl SearchInterface {
-    pub fn new(pane_content: &str) -> Self {
+    pub fn new(pane_content: &str, label_chars: String) -> Self {
         let lines = pane_content.split('\n').map(ToString::to_string).collect();
         Self {
             lines,
             matches: Vec::new(),
+            label_chars,
         }
     }
 
@@ -83,7 +83,7 @@ impl SearchInterface {
         unique.sort_by_key(|m| (m.line, m.col, m.match_start));
         unique.reverse();
 
-        assign_labels(&mut unique, query);
+        assign_labels(&mut unique, query, &self.label_chars);
 
         self.matches.clone_from(&unique);
         unique
@@ -95,6 +95,10 @@ impl SearchInterface {
 
     pub fn first_match(&self) -> Option<&SearchMatch> {
         self.matches.first()
+    }
+
+    pub fn first_visible_match(&self, max_lines: usize) -> Option<&SearchMatch> {
+        self.matches.iter().find(|m| m.line < max_lines)
     }
 
     pub fn get_matches_at_line(&self, line_num: usize) -> Vec<&SearchMatch> {
@@ -132,13 +136,18 @@ pub fn delete_prev_word(input: &str) -> String {
     chars.into_iter().collect()
 }
 
-pub fn trim_wrapping_token(token: &str, match_start: usize, match_end: usize) -> &str {
+pub fn trim_wrapping_token<'a>(
+    token: &'a str,
+    match_start: usize,
+    match_end: usize,
+    trimmable_chars: &str,
+) -> &'a str {
     let mut start = 0usize;
     for (idx, ch) in token.char_indices() {
         if idx >= match_start {
             break;
         }
-        if is_trimmable_char(ch) {
+        if trimmable_chars.contains(ch) {
             start = idx + ch.len_utf8();
         } else {
             break;
@@ -153,7 +162,7 @@ pub fn trim_wrapping_token(token: &str, match_start: usize, match_end: usize) ->
         if idx < match_end {
             break;
         }
-        if is_trimmable_char(ch) {
+        if trimmable_chars.contains(ch) {
             end = idx;
         } else {
             break;
@@ -165,10 +174,6 @@ pub fn trim_wrapping_token(token: &str, match_start: usize, match_end: usize) ->
     } else {
         &token[start..end]
     }
-}
-
-fn is_trimmable_char(ch: char) -> bool {
-    matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | '`')
 }
 
 fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
@@ -204,7 +209,7 @@ fn find_tokens(line: &str) -> Vec<(usize, usize)> {
     tokens
 }
 
-fn assign_labels(matches: &mut [SearchMatch], query: &str) {
+fn assign_labels(matches: &mut [SearchMatch], query: &str, label_chars: &str) {
     let query_chars: HashSet<char> = query.to_ascii_lowercase().chars().collect();
 
     let mut continuation_chars = HashSet::new();
@@ -221,7 +226,7 @@ fn assign_labels(matches: &mut [SearchMatch], query: &str) {
         let match_chars: HashSet<char> = m.text.to_ascii_lowercase().chars().collect();
 
         let mut label = None;
-        for c in DEFAULT_LABELS.chars() {
+        for c in label_chars.chars() {
             if used.contains(&c) {
                 continue;
             }
@@ -244,6 +249,15 @@ fn assign_labels(matches: &mut [SearchMatch], query: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+
+    fn default_labels() -> String {
+        Config::defaults().label_characters
+    }
+
+    fn default_trimmable() -> String {
+        Config::defaults().trimmable_chars
+    }
 
     #[test]
     fn find_tokens_basic() {
@@ -254,7 +268,7 @@ mod tests {
 
     #[test]
     fn search_case_insensitive() {
-        let mut search = SearchInterface::new("Foo bar");
+        let mut search = SearchInterface::new("Foo bar", default_labels());
         let matches = search.search("fo");
         assert_eq!(matches.len(), 1);
         let m = &matches[0];
@@ -268,7 +282,7 @@ mod tests {
 
     #[test]
     fn search_ordering_is_reverse() {
-        let mut search = SearchInterface::new("abc abc");
+        let mut search = SearchInterface::new("abc abc", default_labels());
         let matches = search.search("a");
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].col, 4);
@@ -277,7 +291,7 @@ mod tests {
 
     #[test]
     fn labels_avoid_query_and_match_chars() {
-        let mut search = SearchInterface::new("abc");
+        let mut search = SearchInterface::new("abc", default_labels());
         let matches = search.search("a");
         let forbidden: HashSet<char> = ['a', 'b', 'c'].into_iter().collect();
         for m in matches {
@@ -289,21 +303,21 @@ mod tests {
     #[test]
     fn trim_wrapping_token_basic() {
         let token = "(foo)";
-        let trimmed = trim_wrapping_token(token, 1, 4);
+        let trimmed = trim_wrapping_token(token, 1, 4, &default_trimmable());
         assert_eq!(trimmed, "foo");
     }
 
     #[test]
     fn trim_wrapping_token_nested() {
         let token = "(`foo`)";
-        let trimmed = trim_wrapping_token(token, 2, 5);
+        let trimmed = trim_wrapping_token(token, 2, 5, &default_trimmable());
         assert_eq!(trimmed, "foo");
     }
 
     #[test]
     fn trim_wrapping_token_trailing_only() {
         let token = "foo)";
-        let trimmed = trim_wrapping_token(token, 0, 3);
+        let trimmed = trim_wrapping_token(token, 0, 3, &default_trimmable());
         assert_eq!(trimmed, "foo");
     }
 

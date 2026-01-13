@@ -20,7 +20,8 @@ pub struct InteractiveUI {
 
 impl InteractiveUI {
     pub fn new(pane_id: String, pane_content: &str, config: Config) -> Self {
-        let search = SearchInterface::new(pane_content);
+        let label_chars = config.label_characters.clone();
+        let search = SearchInterface::new(pane_content, label_chars);
 
         Self {
             pane_id,
@@ -65,11 +66,13 @@ impl InteractiveUI {
                             }
                         }
                         KeyCode::Enter | KeyCode::Char(' ') if !ctrl => {
-                            if let Some(first) = self.search.first_match() {
+                            let max_lines = Self::visible_line_limit();
+                            if let Some(first) = self.search.first_visible_match(max_lines) {
                                 let text = trim_wrapping_token(
                                     &first.text,
                                     first.match_start,
                                     first.match_end,
+                                    &self.config.trimmable_chars,
                                 );
                                 let action = if matches!(key.code, KeyCode::Enter) {
                                     ExitAction::PasteAndEnter
@@ -95,6 +98,7 @@ impl InteractiveUI {
                                     &match_item.text,
                                     match_item.match_start,
                                     match_item.match_end,
+                                    &self.config.trimmable_chars,
                                 );
                                 self.save_result(text, action)?;
                                 return Ok(());
@@ -124,10 +128,8 @@ impl InteractiveUI {
         let mut out = io::stderr();
         execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
 
-        let (_, height) = terminal::size().unwrap_or((80, 40));
-        let height = height as usize;
-
-        let available_height = height.saturating_sub(1);
+        let available_height = Self::visible_line_limit();
+        let height = available_height.saturating_add(1);
 
         out.queue(MoveTo(0, 0))?;
 
@@ -146,6 +148,11 @@ impl InteractiveUI {
         Ok(())
     }
 
+    fn visible_line_limit() -> usize {
+        let (_, height) = terminal::size().unwrap_or((80, 40));
+        (height as usize).saturating_sub(1)
+    }
+
     fn prompt_cursor_column(&self) -> usize {
         let mut col = UnicodeWidthStr::width(self.config.prompt_indicator.as_str()) + 2;
         if !self.search_query.is_empty() {
@@ -161,7 +168,7 @@ impl InteractiveUI {
             let matches = self.search.get_matches_at_line(line_idx);
             let current_match = self
                 .search
-                .first_match()
+                .first_visible_match(total_lines)
                 .filter(|m| m.line == line_idx)
                 .map(|m| (m.col, m.match_start, m.match_end));
             let is_last_line = line_idx + 1 == total_lines;

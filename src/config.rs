@@ -4,6 +4,8 @@ use crossterm::style::{self, Attribute, Color, SetAttribute, Stylize};
 pub struct Config {
     pub prompt_placeholder_text: String,
     pub prompt_indicator: String,
+    pub label_characters: String,
+    pub trimmable_chars: String,
     pub highlight_style: StyleSpec,
     pub current_style: StyleSpec,
     pub label_style: StyleSpec,
@@ -16,6 +18,8 @@ impl Config {
         Self {
             prompt_placeholder_text: "search...".to_string(),
             prompt_indicator: "❯".to_string(),
+            label_characters: "asdfghjklqwertyuiopzxcvbnm".to_string(),
+            trimmable_chars: "()[]{}\"'`".to_string(),
             highlight_style: StyleSpec::new(Some(Color::Rgb {
                 r: 186,
                 g: 187,
