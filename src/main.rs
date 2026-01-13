@@ -7,7 +7,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, execute};
 use flash_tmux::ansi;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 use std::process::Command;
 use unicode_width::UnicodeWidthStr;
@@ -213,7 +213,6 @@ struct PaneDimensions {
 
 struct InteractiveUI {
     pane_id: String,
-    pane_content_plain: String,
     config: Config,
     search: SearchInterface,
     search_query: String,
@@ -227,7 +226,6 @@ impl InteractiveUI {
 
         Self {
             pane_id,
-            pane_content_plain,
             config,
             search,
             search_query: String::new(),
@@ -331,13 +329,11 @@ impl InteractiveUI {
         let mut out = io::stderr();
         execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
 
-        let lines: Vec<&str> = self.pane_content_plain.split_terminator('\n').collect();
-
         let (_, height) = terminal::size().unwrap_or((80, 40));
         let height = height as usize;
 
         let available_height = height.saturating_sub(1);
-        let mut lines = lines;
+        let mut lines: Vec<&str> = self.search.lines.iter().map(String::as_str).collect();
 
         if lines.len() > available_height {
             lines.truncate(available_height);
@@ -527,15 +523,13 @@ fn render_line_with_matches(
         );
     }
 
-    let mut label_map: HashMap<usize, char> = HashMap::new();
-    for m in matches {
-        if let Some(label) = m.label {
-            let label_pos = m.col + m.match_end;
-            if label_pos <= line.len() {
-                label_map.entry(label_pos).or_insert(label);
-            }
-        }
-    }
+    let mut label_positions: Vec<(usize, char)> = matches
+        .iter()
+        .filter_map(|m| m.label.map(|label| (m.col + m.match_end, label)))
+        .filter(|(pos, _)| *pos <= line.len())
+        .collect();
+    label_positions.sort_by_key(|(pos, _)| *pos);
+    label_positions.dedup_by_key(|(pos, _)| *pos);
 
     let mut style_map = vec![StyleKind::Base; line.len()];
     for m in matches {
@@ -564,8 +558,9 @@ fn render_line_with_matches(
     let mut active = StyleKind::Base;
     let mut buffer = String::new();
 
+    let mut label_iter = label_positions.iter().peekable();
     for (idx, ch) in line.char_indices() {
-        if let Some(label) = label_map.get(&idx) {
+        if let Some((_, label)) = label_iter.next_if(|(pos, _)| *pos == idx) {
             flush_segment(&mut out, &mut buffer, active, config);
             out.push_str(&config.style_sequences.reset);
             out.push_str(&config.label_style.apply(&label.to_string()));
@@ -583,7 +578,7 @@ fn render_line_with_matches(
         buffer.push(ch);
     }
 
-    if let Some(label) = label_map.get(&line.len()) {
+    if let Some((_, label)) = label_iter.next_if(|(pos, _)| *pos == line.len()) {
         flush_segment(&mut out, &mut buffer, active, config);
         out.push_str(&config.style_sequences.reset);
         out.push_str(&config.label_style.apply(&label.to_string()));
