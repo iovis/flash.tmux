@@ -4,7 +4,7 @@ use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, execute};
-use unicode_width::UnicodeWidthStr;
+use flash_tmux::ansi;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Write};
@@ -163,7 +163,7 @@ struct InteractiveUI {
 
 impl InteractiveUI {
     fn new(pane_id: String, pane_content: String, config: Config) -> Self {
-        let pane_content_plain = strip_ansi_codes(&pane_content);
+        let pane_content_plain = ansi::strip_ansi_codes(&pane_content);
         let search = SearchInterface::new(&pane_content_plain);
 
         Self {
@@ -308,9 +308,9 @@ impl InteractiveUI {
     }
 
     fn prompt_cursor_column(&self) -> usize {
-        let mut col = visible_length(&self.config.prompt_indicator) + 2;
+        let mut col = ansi::visible_length(&self.config.prompt_indicator) + 2;
         if !self.search_query.is_empty() {
-            col += visible_length(&self.search_query);
+            col += ansi::visible_length(&self.search_query);
         }
         col
     }
@@ -337,13 +337,13 @@ impl InteractiveUI {
                 if self.search_query.is_empty() {
                     line.to_string()
                 } else {
-                    dim_coloured_line(line)
+                    dim_colored_line(line)
                 }
             } else {
                 let dimmed = if self.search_query.is_empty() {
                     line.to_string()
                 } else {
-                    dim_coloured_line(line)
+                    dim_colored_line(line)
                 };
                 display_line_with_matches(&dimmed, line_plain, &matches, &self.config)
             };
@@ -448,7 +448,7 @@ fn delete_prev_word(input: &str) -> String {
     chars.into_iter().collect()
 }
 
-fn dim_coloured_line(line: &str) -> String {
+fn dim_colored_line(line: &str) -> String {
     if line.starts_with(ANSI_DIM) {
         return line.to_string();
     }
@@ -483,38 +483,46 @@ fn display_line_with_matches(
         let plain_match_end = word_start + m.match_end;
         let plain_replace_index = plain_match_end;
 
-        let coloured_replace_start =
-            map_position_to_coloured(&display, plain_replace_index, &mut pos_cache, cache_line_id);
-        let coloured_skip_len = advance_plain_chars(&display[coloured_replace_start..], 1);
-        let coloured_label = format!(
+        let colored_replace_start = ansi::map_position_to_colored(
+            &display,
+            plain_replace_index,
+            &mut pos_cache,
+            cache_line_id,
+        );
+        let colored_skip_len = ansi::advance_plain_chars(&display[colored_replace_start..], 1);
+        let colored_label = format!(
             "{label_color}{label}{ANSI_RESET}",
             label_color = config.label_color
         );
 
         if plain_replace_index < line_plain.len() {
             let mut new = String::new();
-            new.push_str(&display[..coloured_replace_start]);
-            new.push_str(&coloured_label);
-            new.push_str(&display[coloured_replace_start + coloured_skip_len..]);
+            new.push_str(&display[..colored_replace_start]);
+            new.push_str(&colored_label);
+            new.push_str(&display[colored_replace_start + colored_skip_len..]);
             display = new;
         } else {
             let mut new = String::new();
-            new.push_str(&display[..coloured_replace_start]);
-            new.push_str(&coloured_label);
-            new.push_str(&display[coloured_replace_start..]);
+            new.push_str(&display[..colored_replace_start]);
+            new.push_str(&colored_label);
+            new.push_str(&display[colored_replace_start..]);
             display = new;
         }
 
         cache_line_id += 1;
 
-        let coloured_match_start =
-            map_position_to_coloured(&display, plain_match_start, &mut pos_cache, cache_line_id);
-        let coloured_match_end =
-            map_position_to_coloured(&display, plain_match_end, &mut pos_cache, cache_line_id);
+        let colored_match_start = ansi::map_position_to_colored(
+            &display,
+            plain_match_start,
+            &mut pos_cache,
+            cache_line_id,
+        );
+        let colored_match_end =
+            ansi::map_position_to_colored(&display, plain_match_end, &mut pos_cache, cache_line_id);
         let plain_matched_part = &m.text[m.match_start..m.match_end];
 
-        let before = display[..coloured_match_start].to_string();
-        let after = display[coloured_match_end..].to_string();
+        let before = display[..colored_match_start].to_string();
+        let after = display[colored_match_end..].to_string();
         let highlighted = format!(
             "{ANSI_RESET}{highlight_color}{plain_matched_part}{ANSI_RESET}",
             highlight_color = config.highlight_color
@@ -525,58 +533,6 @@ fn display_line_with_matches(
     }
 
     display
-}
-
-fn map_position_to_coloured(
-    coloured_text: &str,
-    plain_pos: usize,
-    cache: &mut HashMap<(usize, usize), usize>,
-    line_id: usize,
-) -> usize {
-    if let Some(v) = cache.get(&(line_id, plain_pos)) {
-        return *v;
-    }
-
-    let bytes = coloured_text.as_bytes();
-    let mut coloured_idx = 0usize;
-    let mut plain_idx = 0usize;
-
-    while plain_idx < plain_pos && coloured_idx < bytes.len() {
-        if bytes[coloured_idx] == 0x1b {
-            let skip = ansi_sequence_len(bytes, coloured_idx);
-            coloured_idx = coloured_idx.saturating_add(skip);
-            continue;
-        }
-
-        coloured_idx += 1;
-        plain_idx += 1;
-    }
-
-    cache.insert((line_id, plain_pos), coloured_idx);
-    coloured_idx
-}
-
-fn advance_plain_chars(coloured_text: &str, count: usize) -> usize {
-    let bytes = coloured_text.as_bytes();
-    let mut coloured_idx = 0usize;
-    let mut plain_idx = 0usize;
-
-    while plain_idx < count && coloured_idx < bytes.len() {
-        if bytes[coloured_idx] == 0x1b {
-            let skip = ansi_sequence_len(bytes, coloured_idx);
-            coloured_idx = coloured_idx.saturating_add(skip);
-            continue;
-        }
-
-        if let Some(ch) = coloured_text[coloured_idx..].chars().next() {
-            coloured_idx += ch.len_utf8();
-            plain_idx += 1;
-        } else {
-            break;
-        }
-    }
-
-    coloured_idx
 }
 
 fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
@@ -609,77 +565,6 @@ fn trim_wrapping_token(token: &str, match_start: usize, match_end: usize) -> &st
     }
 
     token
-}
-
-fn visible_length(text: &str) -> usize {
-    UnicodeWidthStr::width(strip_ansi_codes(text).as_str())
-}
-
-fn strip_ansi_codes(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(text.len());
-    let mut idx = 0usize;
-
-    while idx < bytes.len() {
-        if bytes[idx] == 0x1b {
-            let skip = ansi_sequence_len(bytes, idx);
-            idx = idx.saturating_add(skip);
-            continue;
-        }
-
-        out.push(bytes[idx]);
-        idx += 1;
-    }
-
-    String::from_utf8_lossy(&out).to_string()
-}
-
-fn ansi_sequence_len(bytes: &[u8], start: usize) -> usize {
-    if start >= bytes.len() {
-        return 0;
-    }
-    if bytes[start] != 0x1b {
-        return 1;
-    }
-    if start + 1 >= bytes.len() {
-        return 1;
-    }
-
-    match bytes[start + 1] {
-        b'[' => {
-            let mut idx = start + 2;
-            while idx < bytes.len() {
-                let b = bytes[idx];
-                if (0x40..=0x7e).contains(&b) {
-                    idx += 1;
-                    break;
-                }
-                idx += 1;
-            }
-            idx.saturating_sub(start).max(1)
-        }
-        b']' | b'P' | b'^' | b'_' | b'X' => {
-            let mut idx = start + 2;
-            while idx < bytes.len() {
-                if bytes[idx] == 0x07 {
-                    return idx + 1 - start;
-                }
-                if bytes[idx] == 0x1b && idx + 1 < bytes.len() && bytes[idx + 1] == b'\\' {
-                    return idx + 2 - start;
-                }
-                idx += 1;
-            }
-            bytes.len().saturating_sub(start).max(1)
-        }
-        b'(' | b')' | b'*' | b'+' | b'-' | b'.' | b'/' => {
-            if start + 2 < bytes.len() {
-                3
-            } else {
-                bytes.len().saturating_sub(start).max(1)
-            }
-        }
-        _ => 2,
-    }
 }
 
 fn find_tokens(line: &str) -> Vec<(usize, usize)> {
