@@ -330,17 +330,12 @@ impl InteractiveUI {
         let height = height as usize;
 
         let available_height = height.saturating_sub(1);
-        let mut lines: Vec<&str> = self.search.lines.iter().map(String::as_str).collect();
-
-        if lines.len() > available_height {
-            lines.truncate(available_height);
-        }
 
         let scroll_bottom = height.saturating_sub(1);
         out.write_all(format!("\x1b[1;{scroll_bottom}r").as_bytes())?;
         out.queue(MoveTo(0, 0))?;
 
-        self.display_pane_content(&mut out, &lines, available_height)?;
+        self.display_pane_content(&mut out, available_height)?;
 
         let prompt = self.build_search_bar_output();
         let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
@@ -363,15 +358,10 @@ impl InteractiveUI {
         col
     }
 
-    fn display_pane_content(
-        &self,
-        out: &mut io::Stderr,
-        lines: &[&str],
-        available_height: usize,
-    ) -> Result<()> {
-        let total_lines = lines.len().min(available_height);
+    fn display_pane_content(&self, out: &mut io::Stderr, available_height: usize) -> Result<()> {
+        let total_lines = self.search.lines.len().min(available_height);
 
-        for (line_idx, line) in lines.iter().take(available_height).enumerate() {
+        for (line_idx, line) in self.search.lines.iter().take(available_height).enumerate() {
             let matches = self.search.get_matches_at_line(line_idx);
             let current_match = self
                 .current_matches
