@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::style::{self, Attribute, Color, SetAttribute, Stylize};
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, execute};
 use flash_tmux::ansi;
@@ -12,8 +13,6 @@ use std::process::Command;
 
 const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
-const ANSI_RESET: &str = "\x1b[0m";
-const ANSI_DIM: &str = "\x1b[2m";
 const EXIT_CODE_PASTE: i32 = 10;
 
 #[derive(Parser, Debug)]
@@ -25,23 +24,63 @@ struct Cli {
     pane_id: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Config {
     prompt_placeholder_text: String,
-    highlight_color: String,
-    label_color: String,
     prompt_indicator: String,
-    prompt_color: String,
+    highlight_style: StyleSpec,
+    label_style: StyleSpec,
+    prompt_style: StyleSpec,
+    style_sequences: StyleSequences,
 }
 
 impl Config {
     fn defaults() -> Self {
         Self {
             prompt_placeholder_text: "search...".to_string(),
-            highlight_color: "\x1b[1;33m".to_string(),
-            label_color: "\x1b[1;32m".to_string(),
             prompt_indicator: "❯".to_string(),
-            prompt_color: "\x1b[1m".to_string(),
+            highlight_style: StyleSpec::new(Some(Color::Yellow), true),
+            label_style: StyleSpec::new(Some(Color::Green), true),
+            prompt_style: StyleSpec::new(None, true),
+            style_sequences: StyleSequences::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StyleSpec {
+    fg: Option<Color>,
+    bold: bool,
+}
+
+impl StyleSpec {
+    fn new(fg: Option<Color>, bold: bool) -> Self {
+        Self { fg, bold }
+    }
+
+    fn apply(self, text: &str) -> String {
+        let mut styled = style::style(text);
+        if let Some(fg) = self.fg {
+            styled = styled.with(fg);
+        }
+        if self.bold {
+            styled = styled.attribute(Attribute::Bold);
+        }
+        format!("{styled}")
+    }
+}
+
+#[derive(Clone)]
+struct StyleSequences {
+    reset: String,
+    dim: String,
+}
+
+impl StyleSequences {
+    fn new() -> Self {
+        Self {
+            reset: format!("{}", SetAttribute(Attribute::Reset)),
+            dim: format!("{}", SetAttribute(Attribute::Dim)),
         }
     }
 }
@@ -337,13 +376,13 @@ impl InteractiveUI {
                 if self.search_query.is_empty() {
                     line.to_string()
                 } else {
-                    dim_colored_line(line)
+                    dim_colored_line(line, &self.config.style_sequences)
                 }
             } else {
                 let dimmed = if self.search_query.is_empty() {
                     line.to_string()
                 } else {
-                    dim_colored_line(line)
+                    dim_colored_line(line, &self.config.style_sequences)
                 };
                 display_line_with_matches(&dimmed, line_plain, &matches, &self.config)
             };
@@ -362,17 +401,21 @@ impl InteractiveUI {
     fn build_search_bar_output(&self) -> String {
         let mut base = String::new();
         if self.search_query.is_empty() {
-            base.push_str(&self.config.prompt_color);
-            base.push_str(&self.config.prompt_indicator);
-            base.push_str(ANSI_RESET);
+            base.push_str(
+                &self
+                    .config
+                    .prompt_style
+                    .apply(&self.config.prompt_indicator),
+            );
             base.push(' ');
-            base.push_str(ANSI_DIM);
-            base.push_str(&self.config.prompt_placeholder_text);
-            base.push_str(ANSI_RESET);
+            base.push_str(&dim_text(&self.config.prompt_placeholder_text));
         } else {
-            base.push_str(&self.config.prompt_color);
-            base.push_str(&self.config.prompt_indicator);
-            base.push_str(ANSI_RESET);
+            base.push_str(
+                &self
+                    .config
+                    .prompt_style
+                    .apply(&self.config.prompt_indicator),
+            );
             base.push(' ');
             base.push_str(&self.search_query);
         }
@@ -448,18 +491,23 @@ fn delete_prev_word(input: &str) -> String {
     chars.into_iter().collect()
 }
 
-fn dim_colored_line(line: &str) -> String {
-    if line.starts_with(ANSI_DIM) {
+fn dim_colored_line(line: &str, styles: &StyleSequences) -> String {
+    if line.starts_with(&styles.dim) {
         return line.to_string();
     }
 
+    let reset_dim = format!("{}{}", styles.reset, styles.dim);
     let mut out = String::new();
-    out.push_str(ANSI_DIM);
-    out.push_str(&line.replace(ANSI_RESET, &format!("{ANSI_RESET}{ANSI_DIM}")));
-    if !line.ends_with(ANSI_RESET) {
-        out.push_str(ANSI_RESET);
+    out.push_str(&styles.dim);
+    out.push_str(&line.replace(&styles.reset, &reset_dim));
+    if !line.ends_with(&styles.reset) {
+        out.push_str(&styles.reset);
     }
     out
+}
+
+fn dim_text(text: &str) -> String {
+    format!("{}", style::style(text).attribute(Attribute::Dim))
 }
 
 fn display_line_with_matches(
@@ -490,10 +538,7 @@ fn display_line_with_matches(
             cache_line_id,
         );
         let colored_skip_len = ansi::advance_plain_chars(&display[colored_replace_start..], 1);
-        let colored_label = format!(
-            "{label_color}{label}{ANSI_RESET}",
-            label_color = config.label_color
-        );
+        let colored_label = config.label_style.apply(&label.to_string());
 
         if plain_replace_index < line_plain.len() {
             let mut new = String::new();
@@ -524,8 +569,9 @@ fn display_line_with_matches(
         let before = display[..colored_match_start].to_string();
         let after = display[colored_match_end..].to_string();
         let highlighted = format!(
-            "{ANSI_RESET}{highlight_color}{plain_matched_part}{ANSI_RESET}",
-            highlight_color = config.highlight_color
+            "{}{}",
+            config.style_sequences.reset,
+            config.highlight_style.apply(plain_matched_part)
         );
         display = format!("{before}{highlighted}{after}");
 
