@@ -331,8 +331,6 @@ impl InteractiveUI {
 
         let available_height = height.saturating_sub(1);
 
-        let scroll_bottom = height.saturating_sub(1);
-        out.write_all(format!("\x1b[1;{scroll_bottom}r").as_bytes())?;
         out.queue(MoveTo(0, 0))?;
 
         self.display_pane_content(&mut out, available_height)?;
@@ -441,7 +439,6 @@ impl Drop for TerminalModeGuard {
             let _ = terminal::disable_raw_mode();
         }
         let mut out = io::stderr();
-        let _ = out.write_all(b"\x1b[r");
         let _ = execute!(out, Clear(ClearType::All), MoveTo(0, 0));
     }
 }
