@@ -1042,6 +1042,10 @@ fn run_interactive(cli: &Cli) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    if std::env::var_os("TMUX").is_none() {
+        bail!("flash_tmux must be run inside tmux");
+    }
+
     let cli = Cli::parse();
     if cli.interactive {
         run_interactive(&cli)
