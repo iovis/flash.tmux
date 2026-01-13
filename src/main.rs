@@ -28,29 +28,21 @@ struct Cli {
 
 #[derive(Clone, Debug)]
 struct Config {
-    reverse_search: bool,
-    case_sensitive: bool,
-    word_separators: Option<String>,
     prompt_placeholder_text: String,
     highlight_color: String,
     label_color: String,
     prompt_indicator: String,
     prompt_color: String,
-    label_characters: Option<String>,
 }
 
 impl Config {
     fn defaults() -> Self {
         Self {
-            reverse_search: true,
-            case_sensitive: false,
-            word_separators: None,
             prompt_placeholder_text: "search...".to_string(),
             highlight_color: "\x1b[1;33m".to_string(),
             label_color: "\x1b[1;32m".to_string(),
             prompt_indicator: "❯".to_string(),
             prompt_color: "\x1b[1m".to_string(),
-            label_characters: None,
         }
     }
 }
@@ -70,40 +62,22 @@ struct SearchMatch {
 #[derive(Debug)]
 struct SearchInterface {
     lines: Vec<String>,
-    reverse_search: bool,
-    word_separators: Option<String>,
-    case_sensitive: bool,
-    label_characters: String,
     search_query: String,
     matches: Vec<SearchMatch>,
 }
 
 impl SearchInterface {
-    fn new(
-        pane_content: &str,
-        reverse_search: bool,
-        word_separators: Option<String>,
-        case_sensitive: bool,
-        label_characters: Option<String>,
-    ) -> Self {
+    fn new(pane_content: &str) -> Self {
         let lines = pane_content.split('\n').map(ToString::to_string).collect();
         Self {
             lines,
-            reverse_search,
-            word_separators,
-            case_sensitive,
-            label_characters: label_characters.unwrap_or_else(|| DEFAULT_LABELS.to_string()),
             search_query: String::new(),
             matches: Vec::new(),
         }
     }
 
     fn search(&mut self, query: &str) -> Vec<SearchMatch> {
-        self.search_query = if self.case_sensitive {
-            query.to_string()
-        } else {
-            query.to_lowercase()
-        };
+        self.search_query = query.to_lowercase();
 
         if query.is_empty() {
             self.matches.clear();
@@ -112,25 +86,12 @@ impl SearchInterface {
 
         let mut matches = Vec::new();
         let mut pos = 0usize;
-        let query_cmp = if self.case_sensitive {
-            query.to_string()
-        } else {
-            query.to_lowercase()
-        };
-
-        let separators = self
-            .word_separators
-            .as_ref()
-            .map(|s| s.chars().collect::<HashSet<char>>());
+        let query_cmp = query.to_lowercase();
 
         for (line_idx, line) in self.lines.iter().enumerate() {
             for (seq_start, seq_end) in find_sequences(line) {
                 let sequence = &line[seq_start..seq_end];
-                let sequence_cmp = if self.case_sensitive {
-                    sequence.to_string()
-                } else {
-                    sequence.to_lowercase()
-                };
+                let sequence_cmp = sequence.to_lowercase();
 
                 if !sequence_cmp.contains(&query_cmp) {
                     continue;
@@ -141,7 +102,7 @@ impl SearchInterface {
                     let match_pos = search_pos + found;
                     let match_end = match_pos + query_cmp.len();
 
-                    let copy_text = determine_copy_text(sequence, match_pos, separators.as_ref());
+                    let copy_text = determine_copy_text(sequence, match_pos);
 
                     matches.push(SearchMatch {
                         text: sequence.to_string(),
@@ -174,16 +135,9 @@ impl SearchInterface {
         }
 
         unique.sort_by_key(|m| m.start_pos);
-        if self.reverse_search {
-            unique.reverse();
-        }
+        unique.reverse();
 
-        assign_labels(
-            &mut unique,
-            &self.search_query,
-            &self.label_characters,
-            self.case_sensitive,
-        );
+        assign_labels(&mut unique, &self.search_query);
 
         self.matches.clone_from(&unique);
         unique
@@ -220,13 +174,7 @@ struct InteractiveUI {
 impl InteractiveUI {
     fn new(pane_id: String, pane_content: String, config: Config) -> Self {
         let pane_content_plain = strip_ansi_codes(&pane_content);
-        let search = SearchInterface::new(
-            &pane_content_plain,
-            config.reverse_search,
-            config.word_separators.clone(),
-            config.case_sensitive,
-            config.label_characters.clone(),
-        );
+        let search = SearchInterface::new(&pane_content_plain);
 
         Self {
             pane_id,
@@ -803,100 +751,32 @@ fn find_sequences(line: &str) -> Vec<(usize, usize)> {
     sequences
 }
 
-fn determine_copy_text(
-    sequence: &str,
-    match_pos: usize,
-    separators: Option<&HashSet<char>>,
-) -> String {
-    let Some(sep) = separators else {
-        return sequence.to_string();
-    };
-
-    let segments = split_by_separators(sequence, sep);
-    if segments.is_empty() {
-        return sequence.to_string();
-    }
-
-    for (start, end) in &segments {
-        if *start <= match_pos && match_pos < *end {
-            return sequence[*start..*end].to_string();
-        }
-        if *start > match_pos {
-            return sequence[*start..*end].to_string();
-        }
-    }
-
-    let (start, end) = segments.iter().max_by_key(|(s, e)| e - s).copied().unwrap();
-    sequence[start..end].to_string()
+fn determine_copy_text(sequence: &str, _match_pos: usize) -> String {
+    sequence.to_string()
 }
 
-fn split_by_separators(sequence: &str, separators: &HashSet<char>) -> Vec<(usize, usize)> {
-    let mut segments = Vec::new();
-    let mut in_seg = false;
-    let mut start = 0usize;
-
-    for (idx, ch) in sequence.char_indices() {
-        if separators.contains(&ch) {
-            if in_seg {
-                segments.push((start, idx));
-                in_seg = false;
-            }
-        } else if !in_seg {
-            start = idx;
-            in_seg = true;
-        }
-    }
-
-    if in_seg {
-        segments.push((start, sequence.len()));
-    }
-
-    segments
-}
-
-fn assign_labels(
-    matches: &mut [SearchMatch],
-    query: &str,
-    label_chars: &str,
-    case_sensitive: bool,
-) {
-    let query_chars: HashSet<char> = if case_sensitive {
-        query.chars().collect()
-    } else {
-        query.to_lowercase().chars().collect()
-    };
+fn assign_labels(matches: &mut [SearchMatch], query: &str) {
+    let query_chars: HashSet<char> = query.to_lowercase().chars().collect();
 
     let mut continuation_chars = HashSet::new();
     for m in matches.iter() {
         if m.match_end < m.text.len() {
             let next = m.text[m.match_end..].chars().next().unwrap_or('\0');
-            continuation_chars.insert(if case_sensitive {
-                next
-            } else {
-                next.to_ascii_lowercase()
-            });
+            continuation_chars.insert(next.to_ascii_lowercase());
         }
     }
 
     let mut used = HashSet::new();
 
     for m in matches.iter_mut() {
-        let match_chars: HashSet<char> = if case_sensitive {
-            m.text.chars().collect()
-        } else {
-            m.text.to_lowercase().chars().collect()
-        };
+        let match_chars: HashSet<char> = m.text.to_lowercase().chars().collect();
 
         let mut label = None;
-        for c in label_chars.chars() {
+        for c in DEFAULT_LABELS.chars() {
             if used.contains(&c) {
                 continue;
             }
-            let c_cmp = if case_sensitive {
-                c
-            } else {
-                c.to_ascii_lowercase()
-            };
+            let c_cmp = c.to_ascii_lowercase();
             if query_chars.contains(&c_cmp)
                 || continuation_chars.contains(&c_cmp)
                 || match_chars.contains(&c_cmp)
