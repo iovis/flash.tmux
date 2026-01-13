@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Write};
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
 const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
@@ -743,7 +743,8 @@ fn assign_labels(matches: &mut [SearchMatch], query: &str) {
 }
 
 fn get_tmux_pane_id() -> Result<String> {
-    tmux_output(&["display-message", "-p", "#{pane_id}"]).context("failed to get pane id")
+    tmux_output_trim(&["display-message", "-p", "#{pane_id}"], TrimMode::Trim)
+        .context("failed to get pane id")
 }
 
 fn capture_pane(pane_id: &str) -> Result<String> {
@@ -755,13 +756,16 @@ fn capture_pane(pane_id: &str) -> Result<String> {
 }
 
 fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
-    let out = tmux_output(&[
-        "display-message",
-        "-t",
-        pane_id,
-        "-p",
-        "#{pane_left} #{pane_top} #{pane_right} #{pane_bottom} #{pane_width} #{pane_height}",
-    ])
+    let out = tmux_output_trim(
+        &[
+            "display-message",
+            "-t",
+            pane_id,
+            "-p",
+            "#{pane_left} #{pane_top} #{pane_right} #{pane_bottom} #{pane_width} #{pane_height}",
+        ],
+        TrimMode::Trim,
+    )
     .ok()?;
 
     let parts: Vec<i32> = out
@@ -788,10 +792,6 @@ fn calculate_popup_position(dimensions: &PaneDimensions) -> (i32, i32, i32, i32)
         dimensions.bottom + 1
     };
     (dimensions.left, y, dimensions.width, dimensions.height)
-}
-
-fn tmux_output(args: &[&str]) -> Result<String> {
-    tmux_output_trim(args, TrimMode::Trim)
 }
 
 fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
@@ -892,8 +892,11 @@ fn run_parent() -> Result<()> {
     let (x, y, w, h) = if let Some(dimensions) = get_pane_dimensions(&pane_id) {
         calculate_popup_position(&dimensions)
     } else {
-        let fallback = tmux_output(&["display-message", "-p", "#{window_width},#{window_height}"])
-            .unwrap_or_else(|_| "160,40".to_string());
+        let fallback = tmux_output_trim(
+            &["display-message", "-p", "#{window_width},#{window_height}"],
+            TrimMode::Trim,
+        )
+        .unwrap_or_else(|_| "160,40".to_string());
         let mut parts = fallback.split(',');
         let w = parts.next().and_then(|v| v.parse().ok()).unwrap_or(160);
         let h = parts.next().and_then(|v| v.parse().ok()).unwrap_or(40);
@@ -921,7 +924,7 @@ fn run_parent() -> Result<()> {
         pane_id.clone(),
     ];
 
-    let status = run_tmux_status(&args)?;
+    let status = Command::new("tmux").args(&args).status()?;
 
     let result_buffer = format!("__flash_copy_result_{pane_id}__");
     let result_text = tmux_output_trim(
@@ -940,11 +943,6 @@ fn run_parent() -> Result<()> {
     let _ = tmux_run_quiet(&["delete-buffer", "-b", &pane_buffer]);
 
     Ok(())
-}
-
-fn run_tmux_status(args: &[String]) -> Result<ExitStatus> {
-    let status = Command::new("tmux").args(args).status()?;
-    Ok(status)
 }
 
 fn run_interactive(cli: &Cli) -> Result<()> {
