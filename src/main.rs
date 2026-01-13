@@ -77,7 +77,7 @@ impl SearchInterface {
     }
 
     fn search(&mut self, query: &str) -> Vec<SearchMatch> {
-        self.search_query = query.to_lowercase();
+        self.search_query = query.to_ascii_lowercase();
 
         if query.is_empty() {
             self.matches.clear();
@@ -86,23 +86,30 @@ impl SearchInterface {
 
         let mut matches = Vec::new();
         let mut pos = 0usize;
-        let query_cmp = query.to_lowercase();
+        let query_cmp = query.to_ascii_lowercase();
+        let query_bytes = query_cmp.as_bytes();
+        let query_len = query_bytes.len();
 
         for (line_idx, line) in self.lines.iter().enumerate() {
             for (seq_start, seq_end) in find_sequences(line) {
                 let sequence = &line[seq_start..seq_end];
-                let sequence_cmp = sequence.to_lowercase();
-
-                if !sequence_cmp.contains(&query_cmp) {
+                let sequence_bytes = sequence.as_bytes();
+                if query_len == 0 || query_len > sequence_bytes.len() {
                     continue;
                 }
 
-                let mut search_pos = 0usize;
-                while let Some(found) = sequence_cmp[search_pos..].find(&query_cmp) {
-                    let match_pos = search_pos + found;
-                    let match_end = match_pos + query_cmp.len();
+                for (match_pos, _) in sequence.char_indices() {
+                    if match_pos + query_len > sequence_bytes.len() {
+                        break;
+                    }
+                    if !ascii_case_insensitive_eq(
+                        &sequence_bytes[match_pos..match_pos + query_len],
+                        query_bytes,
+                    ) {
+                        continue;
+                    }
 
-                    let copy_text = determine_copy_text(sequence, match_pos);
+                    let match_end = match_pos + query_len;
 
                     matches.push(SearchMatch {
                         text: sequence.to_string(),
@@ -112,13 +119,8 @@ impl SearchInterface {
                         label: None,
                         match_start: match_pos,
                         match_end,
-                        copy_text,
+                        copy_text: sequence.to_string(),
                     });
-
-                    search_pos = match_pos + 1;
-                    if search_pos >= sequence_cmp.len() {
-                        break;
-                    }
                 }
             }
 
@@ -656,6 +658,15 @@ fn advance_plain_chars(coloured_text: &str, count: usize) -> usize {
     coloured_idx
 }
 
+fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
 fn visible_length(text: &str) -> usize {
     UnicodeWidthStr::width(strip_ansi_codes(text).as_str())
 }
@@ -751,12 +762,8 @@ fn find_sequences(line: &str) -> Vec<(usize, usize)> {
     sequences
 }
 
-fn determine_copy_text(sequence: &str, _match_pos: usize) -> String {
-    sequence.to_string()
-}
-
 fn assign_labels(matches: &mut [SearchMatch], query: &str) {
-    let query_chars: HashSet<char> = query.to_lowercase().chars().collect();
+    let query_chars: HashSet<char> = query.to_ascii_lowercase().chars().collect();
 
     let mut continuation_chars = HashSet::new();
     for m in matches.iter() {
@@ -769,7 +776,7 @@ fn assign_labels(matches: &mut [SearchMatch], query: &str) {
     let mut used = HashSet::new();
 
     for m in matches.iter_mut() {
-        let match_chars: HashSet<char> = m.text.to_lowercase().chars().collect();
+        let match_chars: HashSet<char> = m.text.to_ascii_lowercase().chars().collect();
 
         let mut label = None;
         for c in DEFAULT_LABELS.chars() {
