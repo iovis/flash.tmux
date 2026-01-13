@@ -11,7 +11,6 @@ use std::io::{self, Read, Write};
 use std::os::fd::BorrowedFd;
 use std::os::unix::io::AsRawFd;
 use std::process::{Command, ExitStatus};
-use std::time::Duration;
 
 const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
@@ -246,7 +245,7 @@ impl InteractiveUI {
         self.display_content()?;
 
         loop {
-            let input = read_char_timeout(Duration::from_millis(100))?;
+            let input = read_char_blocking()?;
             let Some(ch) = input else {
                 continue;
             };
@@ -482,16 +481,11 @@ enum InputChar {
     Esc,
 }
 
-fn read_char_timeout(timeout: Duration) -> Result<Option<InputChar>> {
+fn read_char_blocking() -> Result<Option<InputChar>> {
     let fd = io::stdin().as_raw_fd();
     let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
     let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
-    let timeout_ms =
-        u16::try_from(timeout.as_millis().min(u128::from(u16::MAX))).unwrap_or(u16::MAX);
-    let res = poll(&mut fds, PollTimeout::from(timeout_ms)).context("poll failed")?;
-    if res == 0 {
-        return Ok(None);
-    }
+    poll(&mut fds, PollTimeout::NONE).context("poll failed")?;
 
     let mut buf = [0u8; 1];
     let mut stdin = io::stdin();
