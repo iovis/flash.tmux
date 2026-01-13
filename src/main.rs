@@ -1,15 +1,12 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use nix::libc;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::sys::termios::{self, Termios};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
+use crossterm::terminal;
 use terminal_size::{Height, Width, terminal_size};
 use unicode_width::UnicodeWidthStr;
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Read, Write};
-use std::os::fd::BorrowedFd;
-use std::os::unix::io::AsRawFd;
+use std::io::{self, IsTerminal, Write};
 use std::process::{Command, ExitStatus};
 
 const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
@@ -341,7 +338,7 @@ impl InteractiveUI {
                 out.write_all(output.as_bytes())?;
             } else {
                 out.write_all(output.as_bytes())?;
-                out.write_all(b"\n")?;
+                out.write_all(b"\r\n")?;
             }
         }
 
@@ -378,36 +375,28 @@ impl InteractiveUI {
 }
 
 struct TerminalModeGuard {
-    original: Option<Termios>,
+    raw_mode_enabled: bool,
 }
 
 impl TerminalModeGuard {
     fn new() -> Result<Self> {
-        let fd = io::stdin().as_raw_fd();
-        if unsafe { libc::isatty(fd) } == 0 {
-            return Ok(Self { original: None });
+        if !io::stdin().is_terminal() {
+            return Ok(Self {
+                raw_mode_enabled: false,
+            });
         }
 
-        let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        let original = termios::tcgetattr(fd_borrowed).context("failed to get termios")?;
-        let mut raw = original.clone();
-        termios::cfmakeraw(&mut raw);
-        raw.output_flags = original.output_flags;
-        let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        termios::tcsetattr(fd_borrowed, termios::SetArg::TCSADRAIN, &raw)
-            .context("failed to set raw mode")?;
+        terminal::enable_raw_mode().context("failed to enable raw mode")?;
         Ok(Self {
-            original: Some(original),
+            raw_mode_enabled: true,
         })
     }
 }
 
 impl Drop for TerminalModeGuard {
     fn drop(&mut self) {
-        let fd = io::stdin().as_raw_fd();
-        if let Some(original) = &self.original {
-            let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-            let _ = termios::tcsetattr(fd_borrowed, termios::SetArg::TCSADRAIN, original);
+        if self.raw_mode_enabled {
+            let _ = terminal::disable_raw_mode();
         }
         let mut out = io::stderr();
         let _ = out.write_all(b"\x1b[r\x1b[2J\x1b[H");
@@ -428,69 +417,40 @@ enum InputChar {
 }
 
 fn read_char_blocking() -> Result<Option<InputChar>> {
-    let fd = io::stdin().as_raw_fd();
-    let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
-    poll(&mut fds, PollTimeout::NONE).context("poll failed")?;
-
-    let mut buf = [0u8; 1];
-    let mut stdin = io::stdin();
-    stdin.read_exact(&mut buf)?;
-    let byte = buf[0];
-
-    match byte {
-        0x03 => Ok(Some(InputChar::CtrlC)),
-        0x04 => Ok(Some(InputChar::CtrlD)),
-        0x15 => Ok(Some(InputChar::CtrlU)),
-        0x17 => Ok(Some(InputChar::CtrlW)),
-        0x7f | 0x08 => Ok(Some(InputChar::Backspace)),
-        b'\n' | b'\r' => Ok(Some(InputChar::Enter)),
-        0x1b => {
-            if is_escape_sequence()? {
-                Ok(None)
-            } else {
-                Ok(Some(InputChar::Esc))
-            }
-        }
-        _ => Ok(Some(InputChar::Char(byte as char))),
-    }
-}
-
-fn is_escape_sequence() -> Result<bool> {
-    let fd = io::stdin().as_raw_fd();
-    let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
-    let res = poll(&mut fds, PollTimeout::from(0u8))?;
-    if res == 0 {
-        return Ok(false);
-    }
-
-    let mut buf = [0u8; 1];
-    let mut stdin = io::stdin();
-    stdin.read_exact(&mut buf)?;
-    let next = buf[0];
-    if next == b'[' || next == b'O' {
-        drain_escape_sequence()?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
-fn drain_escape_sequence() -> Result<()> {
-    let fd = io::stdin().as_raw_fd();
-    let mut buf = [0u8; 8];
     loop {
-        let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
-        let res = poll(&mut fds, PollTimeout::from(0u8))?;
-        if res == 0 {
-            break;
+        match read()? {
+            Event::Key(event) => {
+                if let Some(input) = map_key_event(event) {
+                    return Ok(Some(input));
+                }
+            }
+            Event::Resize(_, _)
+            | Event::Mouse(_)
+            | Event::Paste(_)
+            | Event::FocusGained
+            | Event::FocusLost => {}
         }
-        let mut stdin = io::stdin();
-        let _ = stdin.read(&mut buf)?;
     }
-    Ok(())
+}
+
+fn map_key_event(event: KeyEvent) -> Option<InputChar> {
+    if matches!(event.kind, KeyEventKind::Release) {
+        return None;
+    }
+
+    let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+
+    match event.code {
+        KeyCode::Char('c') if ctrl => Some(InputChar::CtrlC),
+        KeyCode::Char('d') if ctrl => Some(InputChar::CtrlD),
+        KeyCode::Char('u') if ctrl => Some(InputChar::CtrlU),
+        KeyCode::Char('w') if ctrl => Some(InputChar::CtrlW),
+        KeyCode::Backspace => Some(InputChar::Backspace),
+        KeyCode::Enter => Some(InputChar::Enter),
+        KeyCode::Esc => Some(InputChar::Esc),
+        KeyCode::Char(c) if !ctrl => Some(InputChar::Char(c)),
+        _ => None,
+    }
 }
 
 fn delete_prev_word(input: &str) -> String {
