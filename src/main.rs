@@ -5,8 +5,6 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::{self, Attribute, Color, SetAttribute, Stylize};
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, execute};
-use flash_tmux::ansi;
-
 use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 use std::process::Command;
@@ -221,8 +219,7 @@ struct InteractiveUI {
 
 impl InteractiveUI {
     fn new(pane_id: String, pane_content: &str, config: Config) -> Self {
-        let pane_content_plain = ansi::strip_ansi_codes(pane_content);
-        let search = SearchInterface::new(&pane_content_plain);
+        let search = SearchInterface::new(pane_content);
 
         Self {
             pane_id,
@@ -724,11 +721,8 @@ fn get_tmux_pane_id() -> Result<String> {
 }
 
 fn capture_pane(pane_id: &str) -> Result<String> {
-    tmux_output_trim(
-        &["capture-pane", "-p", "-e", "-J", "-t", pane_id],
-        TrimMode::None,
-    )
-    .context("failed to capture pane")
+    tmux_output_trim(&["capture-pane", "-p", "-J", "-t", pane_id], TrimMode::None)
+        .context("failed to capture pane")
 }
 
 fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
