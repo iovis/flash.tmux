@@ -4,12 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
-nix = { version = "0.28", features = ["poll", "term"] }
-terminal_size = "0.3"
-unicode-width = "0.1"
-
-[[bin]]
-name = "flash-tmux"
-path = "src/main.rs"
+anyhow = "1.0.100"
+clap = { version = "4.5.54", features = ["derive"] }
+nix = { version = "0.30.1", features = ["poll", "term"] }
+terminal_size = "0.4.3"
+unicode-width = "0.2.2"
