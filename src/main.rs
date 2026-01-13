@@ -252,7 +252,7 @@ impl InteractiveUI {
             };
 
             match ch {
-                InputChar::CtrlC | InputChar::Esc => {
+                InputChar::CtrlC | InputChar::CtrlD | InputChar::Esc => {
                     self.save_result("", false)?;
                     return Ok(());
                 }
@@ -474,6 +474,7 @@ impl Drop for TerminalModeGuard {
 enum InputChar {
     Char(char),
     CtrlC,
+    CtrlD,
     CtrlU,
     CtrlW,
     Backspace,
@@ -499,6 +500,7 @@ fn read_char_timeout(timeout: Duration) -> Result<Option<InputChar>> {
 
     match byte {
         0x03 => Ok(Some(InputChar::CtrlC)),
+        0x04 => Ok(Some(InputChar::CtrlD)),
         0x15 => Ok(Some(InputChar::CtrlU)),
         0x17 => Ok(Some(InputChar::CtrlW)),
         0x7f | 0x08 => Ok(Some(InputChar::Backspace)),

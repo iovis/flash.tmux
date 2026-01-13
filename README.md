@@ -38,6 +38,7 @@ tmux source-file ~/.tmux.conf
 - Type to search.
 - Press the label character to copy.
 - Type a lowercase label to copy + auto-paste, or an uppercase label to copy only.
+- Exit with Esc, Ctrl-C, or Ctrl-D.
 
 ## Configuration
 
