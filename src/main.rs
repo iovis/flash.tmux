@@ -98,7 +98,7 @@ impl Config {
                 b: 138,
             }))
             .bold(),
-            prompt_style: StyleSpec::new(None).bold(),
+            prompt_style: StyleSpec::new(Some(Color::Magenta)).bold(),
             style_sequences: StyleSequences::new(),
         }
     }
