@@ -13,7 +13,7 @@ use std::os::unix::io::AsRawFd;
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
-const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM";
+const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_DIM: &str = "\x1b[2m";
@@ -37,7 +37,6 @@ struct Config {
     label_color: String,
     prompt_indicator: String,
     prompt_color: String,
-    auto_paste_enable: bool,
     label_characters: Option<String>,
 }
 
@@ -52,7 +51,6 @@ impl Config {
             label_color: "\x1b[1;32m".to_string(),
             prompt_indicator: "❯".to_string(),
             prompt_color: "\x1b[1m".to_string(),
-            auto_paste_enable: true,
             label_characters: None,
         }
     }
@@ -218,7 +216,6 @@ struct InteractiveUI {
     search: SearchInterface,
     search_query: String,
     current_matches: Vec<SearchMatch>,
-    autopaste_modifier_active: bool,
 }
 
 impl InteractiveUI {
@@ -240,7 +237,6 @@ impl InteractiveUI {
             search,
             search_query: String::new(),
             current_matches: Vec::new(),
-            autopaste_modifier_active: false,
         }
     }
 
@@ -256,40 +252,18 @@ impl InteractiveUI {
             };
 
             match ch {
-                InputChar::CtrlC => {
+                InputChar::CtrlC | InputChar::Esc => {
                     self.save_result("", false)?;
                     return Ok(());
-                }
-                InputChar::Esc => {
-                    if self.autopaste_modifier_active {
-                        continue;
-                    }
-                    self.save_result("", false)?;
-                    return Ok(());
-                }
-                InputChar::Char(';' | ':') => {
-                    if self.config.auto_paste_enable {
-                        self.autopaste_modifier_active = true;
-                        continue;
-                    }
-                    self.autopaste_modifier_active = false;
-                    self.update_search(format!(
-                        "{search_query}{ch}",
-                        search_query = self.search_query,
-                        ch = ch.as_char()
-                    ))?;
                 }
                 InputChar::CtrlU => {
-                    self.autopaste_modifier_active = false;
                     self.update_search(String::new())?;
                 }
                 InputChar::CtrlW => {
-                    self.autopaste_modifier_active = false;
                     let new_query = delete_prev_word(&self.search_query);
                     self.update_search(new_query)?;
                 }
                 InputChar::Backspace => {
-                    self.autopaste_modifier_active = false;
                     if !self.search_query.is_empty() {
                         let mut new_query = self.search_query.clone();
                         new_query.pop();
@@ -298,16 +272,16 @@ impl InteractiveUI {
                 }
                 InputChar::Enter => {
                     if let Some(first) = self.current_matches.first() {
-                        let should_paste = self.autopaste_modifier_active;
-                        self.save_result(&first.copy_text, should_paste)?;
+                        self.save_result(&first.copy_text, true)?;
                         return Ok(());
                     }
                 }
                 InputChar::Char(c) => {
+                    let label_lookup = c.to_ascii_lowercase();
                     if !self.search_query.is_empty()
-                        && let Some(match_item) = self.search.get_match_by_label(c)
+                        && let Some(match_item) = self.search.get_match_by_label(label_lookup)
                     {
-                        let should_paste = self.autopaste_modifier_active;
+                        let should_paste = c.is_ascii_lowercase();
                         self.save_result(&match_item.copy_text, should_paste)?;
                         return Ok(());
                     }
@@ -505,15 +479,6 @@ enum InputChar {
     Backspace,
     Enter,
     Esc,
-}
-
-impl InputChar {
-    fn as_char(&self) -> char {
-        match self {
-            InputChar::Char(c) => *c,
-            _ => '\0',
-        }
-    }
 }
 
 fn read_char_timeout(timeout: Duration) -> Result<Option<InputChar>> {

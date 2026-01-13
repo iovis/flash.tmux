@@ -37,7 +37,7 @@ tmux source-file ~/.tmux.conf
 - Default binding: `<prefix> S-f` (same as the original plugin with `@flash-copy-bind-key` = `F`).
 - Type to search.
 - Press the label character to copy.
-- Press `;` then a label to auto-paste.
+- Type a lowercase label to copy + auto-paste, or an uppercase label to copy only.
 
 ## Configuration
 
