@@ -13,6 +13,49 @@ use unicode_width::UnicodeWidthStr;
 const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
 const EXIT_CODE_PASTE: i32 = 10;
+const EXIT_CODE_PASTE_AND_ENTER: i32 = 11;
+const EXIT_CODE_PASTE_AND_SPACE: i32 = 12;
+
+#[derive(Copy, Clone)]
+enum ExitAction {
+    Cancel,
+    CopyOnly,
+    Paste,
+    PasteAndEnter,
+    PasteAndSpace,
+}
+
+#[derive(Copy, Clone)]
+enum ForwardKey {
+    Enter,
+    Space,
+}
+
+impl ExitAction {
+    fn exit_code(self) -> i32 {
+        match self {
+            ExitAction::Cancel | ExitAction::CopyOnly => 0,
+            ExitAction::Paste => EXIT_CODE_PASTE,
+            ExitAction::PasteAndEnter => EXIT_CODE_PASTE_AND_ENTER,
+            ExitAction::PasteAndSpace => EXIT_CODE_PASTE_AND_SPACE,
+        }
+    }
+
+    fn should_paste(self) -> bool {
+        matches!(
+            self,
+            ExitAction::Paste | ExitAction::PasteAndEnter | ExitAction::PasteAndSpace
+        )
+    }
+
+    fn forward_key(self) -> Option<ForwardKey> {
+        match self {
+            ExitAction::PasteAndEnter => Some(ForwardKey::Enter),
+            ExitAction::PasteAndSpace => Some(ForwardKey::Space),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -195,6 +238,10 @@ impl SearchInterface {
         self.matches.iter().find(|m| m.label == Some(label))
     }
 
+    fn first_match(&self) -> Option<&SearchMatch> {
+        self.matches.first()
+    }
+
     fn get_matches_at_line(&self, line_num: usize) -> Vec<&SearchMatch> {
         self.matches.iter().filter(|m| m.line == line_num).collect()
     }
@@ -214,7 +261,6 @@ struct InteractiveUI {
     config: Config,
     search: SearchInterface,
     search_query: String,
-    current_matches: Vec<SearchMatch>,
 }
 
 impl InteractiveUI {
@@ -226,7 +272,6 @@ impl InteractiveUI {
             config,
             search,
             search_query: String::new(),
-            current_matches: Vec::new(),
         }
     }
 
@@ -243,11 +288,11 @@ impl InteractiveUI {
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                     match key.code {
                         KeyCode::Char('c' | 'd') if ctrl => {
-                            self.save_result("", false)?;
+                            self.save_result("", ExitAction::Cancel)?;
                             return Ok(());
                         }
                         KeyCode::Esc => {
-                            self.save_result("", false)?;
+                            self.save_result("", ExitAction::Cancel)?;
                             return Ok(());
                         }
                         KeyCode::Char('u') if ctrl => {
@@ -264,25 +309,19 @@ impl InteractiveUI {
                                 self.update_search(new_query)?;
                             }
                         }
-                        KeyCode::Enter => {
-                            if let Some(first) = self.current_matches.first() {
+                        KeyCode::Enter | KeyCode::Char(' ') if !ctrl => {
+                            if let Some(first) = self.search.first_match() {
                                 let text = trim_wrapping_token(
                                     &first.text,
                                     first.match_start,
                                     first.match_end,
                                 );
-                                self.save_result(text, true)?;
-                                return Ok(());
-                            }
-                        }
-                        KeyCode::Char(' ') if !ctrl => {
-                            if let Some(first) = self.current_matches.first() {
-                                let text = trim_wrapping_token(
-                                    &first.text,
-                                    first.match_start,
-                                    first.match_end,
-                                );
-                                self.save_result(text, true)?;
+                                let action = if matches!(key.code, KeyCode::Enter) {
+                                    ExitAction::PasteAndEnter
+                                } else {
+                                    ExitAction::PasteAndSpace
+                                };
+                                self.save_result(text, action)?;
                                 return Ok(());
                             }
                         }
@@ -292,13 +331,17 @@ impl InteractiveUI {
                                 && let Some(match_item) =
                                     self.search.get_match_by_label(label_lookup)
                             {
-                                let should_paste = c.is_ascii_lowercase();
+                                let action = if c.is_ascii_lowercase() {
+                                    ExitAction::Paste
+                                } else {
+                                    ExitAction::CopyOnly
+                                };
                                 let text = trim_wrapping_token(
                                     &match_item.text,
                                     match_item.match_start,
                                     match_item.match_end,
                                 );
-                                self.save_result(text, should_paste)?;
+                                self.save_result(text, action)?;
                                 return Ok(());
                             }
 
@@ -318,7 +361,7 @@ impl InteractiveUI {
 
     fn update_search(&mut self, new_query: String) -> Result<()> {
         self.search_query = new_query;
-        self.current_matches = self.search.search(&self.search_query);
+        self.search.search(&self.search_query);
         self.display_content()
     }
 
@@ -362,8 +405,8 @@ impl InteractiveUI {
         for (line_idx, line) in self.search.lines.iter().take(available_height).enumerate() {
             let matches = self.search.get_matches_at_line(line_idx);
             let current_match = self
-                .current_matches
-                .first()
+                .search
+                .first_match()
                 .filter(|m| m.line == line_idx)
                 .map(|m| (m.col, m.match_start, m.match_end));
             let is_last_line = line_idx + 1 == total_lines;
@@ -406,11 +449,11 @@ impl InteractiveUI {
         base
     }
 
-    fn save_result(&self, text: &str, should_paste: bool) -> Result<()> {
+    fn save_result(&self, text: &str, action: ExitAction) -> Result<()> {
         let pane_id = &self.pane_id;
         let buffer = format!("__flash_copy_result_{pane_id}__");
         tmux_run_quiet(&["set-buffer", "-b", &buffer, "--", text]);
-        std::process::exit(if should_paste { EXIT_CODE_PASTE } else { 0 });
+        std::process::exit(action.exit_code());
     }
 }
 
@@ -827,7 +870,12 @@ impl Clipboard {
         tmux_run_quiet(&["set-buffer", "--", text])
     }
 
-    fn copy_and_paste(text: &str, pane_id: &str, auto_paste: bool) {
+    fn copy_and_paste(
+        text: &str,
+        pane_id: &str,
+        auto_paste: bool,
+        forward_key: Option<ForwardKey>,
+    ) {
         if !Self::copy(text) {
             return;
         }
@@ -835,6 +883,13 @@ impl Clipboard {
         if auto_paste {
             let _ = tmux_run_quiet(&["set-buffer", "-b", "flash-paste", "--", text]);
             let _ = tmux_run_quiet(&["paste-buffer", "-b", "flash-paste", "-t", pane_id]);
+            if let Some(key) = forward_key {
+                let key_name = match key {
+                    ForwardKey::Enter => "Enter",
+                    ForwardKey::Space => "Space",
+                };
+                let _ = tmux_run_quiet(&["send-keys", "-t", pane_id, key_name]);
+            }
         }
     }
 }
@@ -907,9 +962,14 @@ fn run_parent() -> Result<()> {
     .ok()
     .filter(|s| !s.is_empty());
 
-    let should_paste = status.code() == Some(EXIT_CODE_PASTE);
+    let action = match status.code() {
+        Some(EXIT_CODE_PASTE) => ExitAction::Paste,
+        Some(EXIT_CODE_PASTE_AND_ENTER) => ExitAction::PasteAndEnter,
+        Some(EXIT_CODE_PASTE_AND_SPACE) => ExitAction::PasteAndSpace,
+        _ => ExitAction::CopyOnly,
+    };
     if let Some(text) = result_text {
-        Clipboard::copy_and_paste(&text, &pane_id, should_paste);
+        Clipboard::copy_and_paste(&text, &pane_id, action.should_paste(), action.forward_key());
     }
 
     let _ = tmux_run_quiet(&["delete-buffer", "-b", &result_buffer]);
