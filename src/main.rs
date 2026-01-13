@@ -14,6 +14,7 @@ const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_DIM: &str = "\x1b[2m";
+const EXIT_CODE_PASTE: i32 = 10;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -383,7 +384,7 @@ impl InteractiveUI {
         let pane_id = &self.pane_id;
         let buffer = format!("__flash_copy_result_{pane_id}__");
         tmux_run_quiet(&["set-buffer", "-b", &buffer, "--", text]);
-        std::process::exit(if should_paste { 10 } else { 0 });
+        std::process::exit(if should_paste { EXIT_CODE_PASTE } else { 0 });
     }
 }
 
@@ -934,7 +935,7 @@ fn run_parent() -> Result<()> {
     .ok()
     .filter(|s| !s.is_empty());
 
-    let should_paste = status.code() == Some(10);
+    let should_paste = status.code() == Some(EXIT_CODE_PASTE);
     if let Some(text) = result_text {
         Clipboard::copy_and_paste(&text, &pane_id, should_paste);
     }
