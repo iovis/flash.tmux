@@ -619,26 +619,42 @@ fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 fn trim_wrapping_token(token: &str, match_start: usize, match_end: usize) -> &str {
-    const WRAPPING_PAIRS: [(&str, &str); 6] = [
-        ("(", ")"),
-        ("[", "]"),
-        ("{", "}"),
-        ("\"", "\""),
-        ("'", "'"),
-        ("`", "`"),
-    ];
-
-    for (open, close) in WRAPPING_PAIRS {
-        if token.starts_with(open) && token.ends_with(close) {
-            let start = open.len();
-            let end = token.len().saturating_sub(close.len());
-            if start < end && match_start >= start && match_end <= end {
-                return &token[start..end];
-            }
+    let mut start = 0usize;
+    for (idx, ch) in token.char_indices() {
+        if idx >= match_start {
+            break;
+        }
+        if is_trimmable_char(ch) {
+            start = idx + ch.len_utf8();
+        } else {
+            break;
         }
     }
 
-    token
+    let mut end = token.len();
+    while end > match_end {
+        let Some((idx, ch)) = token[..end].char_indices().last() else {
+            break;
+        };
+        if idx < match_end {
+            break;
+        }
+        if is_trimmable_char(ch) {
+            end = idx;
+        } else {
+            break;
+        }
+    }
+
+    if start >= end {
+        token
+    } else {
+        &token[start..end]
+    }
+}
+
+fn is_trimmable_char(ch: char) -> bool {
+    matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | '`')
 }
 
 fn find_tokens(line: &str) -> Vec<(usize, usize)> {
