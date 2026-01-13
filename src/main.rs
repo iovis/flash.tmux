@@ -522,6 +522,12 @@ fn render_line_with_matches(
             config.style_sequences.dim, config.style_sequences.reset
         );
     }
+    if matches.is_empty() {
+        return format!(
+            "{}{}{}",
+            config.style_sequences.dim, line, config.style_sequences.reset
+        );
+    }
 
     let mut label_positions: Vec<(usize, char)> = matches
         .iter()
