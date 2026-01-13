@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::cursor::MoveTo;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, execute};
 use unicode_width::UnicodeWidthStr;
@@ -182,75 +182,82 @@ impl InteractiveUI {
         self.display_content()?;
 
         loop {
-            let input = read_char_blocking()?;
-            let Some(ch) = input else {
-                continue;
-            };
-
-            match ch {
-                InputChar::CtrlC | InputChar::CtrlD | InputChar::Esc => {
-                    self.save_result("", false)?;
-                    return Ok(());
-                }
-                InputChar::Resize => {
-                    self.display_content()?;
-                }
-                InputChar::CtrlU => {
-                    self.update_search(String::new())?;
-                }
-                InputChar::CtrlW => {
-                    let new_query = delete_prev_word(&self.search_query);
-                    self.update_search(new_query)?;
-                }
-                InputChar::Backspace => {
-                    if !self.search_query.is_empty() {
-                        let mut new_query = self.search_query.clone();
-                        new_query.pop();
-                        self.update_search(new_query)?;
-                    }
-                }
-                InputChar::Enter => {
-                    if let Some(first) = self.current_matches.first() {
-                        let text =
-                            trim_wrapping_token(&first.text, first.match_start, first.match_end);
-                        self.save_result(text, true)?;
-                        return Ok(());
-                    }
-                }
-                InputChar::Char(c) => {
-                    if c == ' ' {
-                        if let Some(first) = self.current_matches.first() {
-                            let text = trim_wrapping_token(
-                                &first.text,
-                                first.match_start,
-                                first.match_end,
-                            );
-                            self.save_result(text, true)?;
+            match crossterm::event::read()? {
+                Event::Key(key) if matches!(key.kind, KeyEventKind::Release) => {}
+                Event::Resize(_, _) => self.display_content()?,
+                Event::Key(key) => {
+                    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    match key.code {
+                        KeyCode::Char('c' | 'd') if ctrl => {
+                            self.save_result("", false)?;
                             return Ok(());
                         }
-                        continue;
-                    }
+                        KeyCode::Esc => {
+                            self.save_result("", false)?;
+                            return Ok(());
+                        }
+                        KeyCode::Char('u') if ctrl => {
+                            self.update_search(String::new())?;
+                        }
+                        KeyCode::Char('w') if ctrl => {
+                            let new_query = delete_prev_word(&self.search_query);
+                            self.update_search(new_query)?;
+                        }
+                        KeyCode::Backspace => {
+                            if !self.search_query.is_empty() {
+                                let mut new_query = self.search_query.clone();
+                                new_query.pop();
+                                self.update_search(new_query)?;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(first) = self.current_matches.first() {
+                                let text = trim_wrapping_token(
+                                    &first.text,
+                                    first.match_start,
+                                    first.match_end,
+                                );
+                                self.save_result(text, true)?;
+                                return Ok(());
+                            }
+                        }
+                        KeyCode::Char(' ') if !ctrl => {
+                            if let Some(first) = self.current_matches.first() {
+                                let text = trim_wrapping_token(
+                                    &first.text,
+                                    first.match_start,
+                                    first.match_end,
+                                );
+                                self.save_result(text, true)?;
+                                return Ok(());
+                            }
+                        }
+                        KeyCode::Char(c) if !ctrl => {
+                            let label_lookup = c.to_ascii_lowercase();
+                            if !self.search_query.is_empty()
+                                && let Some(match_item) =
+                                    self.search.get_match_by_label(label_lookup)
+                            {
+                                let should_paste = c.is_ascii_lowercase();
+                                let text = trim_wrapping_token(
+                                    &match_item.text,
+                                    match_item.match_start,
+                                    match_item.match_end,
+                                );
+                                self.save_result(text, should_paste)?;
+                                return Ok(());
+                            }
 
-                    let label_lookup = c.to_ascii_lowercase();
-                    if !self.search_query.is_empty()
-                        && let Some(match_item) = self.search.get_match_by_label(label_lookup)
-                    {
-                        let should_paste = c.is_ascii_lowercase();
-                        let text = trim_wrapping_token(
-                            &match_item.text,
-                            match_item.match_start,
-                            match_item.match_end,
-                        );
-                        self.save_result(text, should_paste)?;
-                        return Ok(());
-                    }
-
-                    if c.is_ascii_graphic() || c == ' ' {
-                        let mut new_query = self.search_query.clone();
-                        new_query.push(c);
-                        self.update_search(new_query)?;
+                            if c.is_ascii_graphic() || c == ' ' {
+                                let mut new_query = self.search_query.clone();
+                                new_query.push(c);
+                                self.update_search(new_query)?;
+                            }
+                        }
+                        _ => {}
                     }
                 }
+                Event::Mouse(_) | Event::Paste(_) | Event::FocusGained | Event::FocusLost => {}
             }
         }
     }
@@ -407,53 +414,6 @@ impl Drop for TerminalModeGuard {
         let mut out = io::stderr();
         let _ = out.write_all(b"\x1b[r");
         let _ = execute!(out, Clear(ClearType::All), MoveTo(0, 0));
-    }
-}
-
-#[derive(Debug)]
-enum InputChar {
-    Char(char),
-    CtrlC,
-    CtrlD,
-    CtrlU,
-    CtrlW,
-    Backspace,
-    Enter,
-    Esc,
-    Resize,
-}
-
-fn read_char_blocking() -> Result<Option<InputChar>> {
-    loop {
-        match read()? {
-            Event::Key(event) => {
-                if let Some(input) = map_key_event(event) {
-                    return Ok(Some(input));
-                }
-            }
-            Event::Resize(_, _) => return Ok(Some(InputChar::Resize)),
-            Event::Mouse(_) | Event::Paste(_) | Event::FocusGained | Event::FocusLost => {}
-        }
-    }
-}
-
-fn map_key_event(event: KeyEvent) -> Option<InputChar> {
-    if matches!(event.kind, KeyEventKind::Release) {
-        return None;
-    }
-
-    let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-
-    match event.code {
-        KeyCode::Char('c') if ctrl => Some(InputChar::CtrlC),
-        KeyCode::Char('d') if ctrl => Some(InputChar::CtrlD),
-        KeyCode::Char('u') if ctrl => Some(InputChar::CtrlU),
-        KeyCode::Char('w') if ctrl => Some(InputChar::CtrlW),
-        KeyCode::Backspace => Some(InputChar::Backspace),
-        KeyCode::Enter => Some(InputChar::Enter),
-        KeyCode::Esc => Some(InputChar::Esc),
-        KeyCode::Char(c) if !ctrl => Some(InputChar::Char(c)),
-        _ => None,
     }
 }
 
