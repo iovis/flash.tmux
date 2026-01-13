@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, read};
-use crossterm::terminal;
-use terminal_size::{Height, Width, terminal_size};
+use crossterm::terminal::{self, Clear, ClearType};
+use crossterm::{QueueableCommand, execute};
 use unicode_width::UnicodeWidthStr;
 
 use std::collections::{HashMap, HashSet};
@@ -191,6 +192,9 @@ impl InteractiveUI {
                     self.save_result("", false)?;
                     return Ok(());
                 }
+                InputChar::Resize => {
+                    self.display_content()?;
+                }
                 InputChar::CtrlU => {
                     self.update_search(String::new())?;
                 }
@@ -259,13 +263,13 @@ impl InteractiveUI {
 
     fn display_content(&self) -> Result<()> {
         let mut out = io::stderr();
-        out.write_all(b"\x1b[2J\x1b[H")?;
+        execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
 
         let lines: Vec<&str> = self.pane_content.split_terminator('\n').collect();
         let lines_plain: Vec<&str> = self.pane_content_plain.split_terminator('\n').collect();
 
-        let (_width, height) =
-            terminal_size().map_or((80, 40), |(Width(w), Height(h))| (w as usize, h as usize));
+        let (_, height) = terminal::size().unwrap_or((80, 40));
+        let height = height as usize;
 
         let available_height = height.saturating_sub(1);
         let mut lines = lines;
@@ -278,16 +282,18 @@ impl InteractiveUI {
 
         let scroll_bottom = height.saturating_sub(1);
         out.write_all(format!("\x1b[1;{scroll_bottom}r").as_bytes())?;
-        out.write_all(b"\x1b[1;1H")?;
+        out.queue(MoveTo(0, 0))?;
 
         self.display_pane_content(&mut out, &lines, &lines_plain, available_height)?;
 
         let prompt = self.build_search_bar_output();
-        out.write_all(format!("\x1b[{height};1H").as_bytes())?;
+        let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
+        out.queue(MoveTo(0, prompt_row))?;
         out.write_all(prompt.as_bytes())?;
 
-        let cursor_col = self.prompt_cursor_column();
-        out.write_all(format!("\x1b[{cursor_col}G").as_bytes())?;
+        let cursor_col =
+            u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX);
+        out.queue(MoveTo(cursor_col, prompt_row))?;
 
         out.flush()?;
         Ok(())
@@ -399,8 +405,8 @@ impl Drop for TerminalModeGuard {
             let _ = terminal::disable_raw_mode();
         }
         let mut out = io::stderr();
-        let _ = out.write_all(b"\x1b[r\x1b[2J\x1b[H");
-        let _ = out.flush();
+        let _ = out.write_all(b"\x1b[r");
+        let _ = execute!(out, Clear(ClearType::All), MoveTo(0, 0));
     }
 }
 
@@ -414,6 +420,7 @@ enum InputChar {
     Backspace,
     Enter,
     Esc,
+    Resize,
 }
 
 fn read_char_blocking() -> Result<Option<InputChar>> {
@@ -424,11 +431,8 @@ fn read_char_blocking() -> Result<Option<InputChar>> {
                     return Ok(Some(input));
                 }
             }
-            Event::Resize(_, _)
-            | Event::Mouse(_)
-            | Event::Paste(_)
-            | Event::FocusGained
-            | Event::FocusLost => {}
+            Event::Resize(_, _) => return Ok(Some(InputChar::Resize)),
+            Event::Mouse(_) | Event::Paste(_) | Event::FocusGained | Event::FocusLost => {}
         }
     }
 }
