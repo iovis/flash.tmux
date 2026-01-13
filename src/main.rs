@@ -1,9 +1,9 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
-use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use nix::sys::termios::{self, Termios};
 use nix::libc;
-use terminal_size::{terminal_size, Height, Width};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::sys::termios::{self, Termios};
+use terminal_size::{Height, Width, terminal_size};
 use unicode_width::UnicodeWidthStr;
 
 use std::collections::{HashMap, HashSet};
@@ -13,8 +13,7 @@ use std::os::unix::io::AsRawFd;
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-const DEFAULT_LABELS: &str =
-    "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM";
+const DEFAULT_LABELS: &str = "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM";
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_DIM: &str = "\x1b[2m";
@@ -101,8 +100,11 @@ impl Config {
             "@flash-copy-prompt-placeholder-text",
             &cfg.prompt_placeholder_text,
         );
-        cfg.highlight_colour =
-            get_string(&global, "@flash-copy-highlight-colour", &cfg.highlight_colour);
+        cfg.highlight_colour = get_string(
+            &global,
+            "@flash-copy-highlight-colour",
+            &cfg.highlight_colour,
+        );
         cfg.label_colour = get_string(&global, "@flash-copy-label-colour", &cfg.label_colour);
         cfg.prompt_position = get_choice(
             &global,
@@ -110,12 +112,13 @@ impl Config {
             &["top", "bottom"],
             &cfg.prompt_position,
         );
-        cfg.prompt_indicator =
-            get_string(&global, "@flash-copy-prompt-indicator", &cfg.prompt_indicator);
-        cfg.prompt_colour =
-            get_string(&global, "@flash-copy-prompt-colour", &cfg.prompt_colour);
-        cfg.auto_paste_enable =
-            get_bool(&global, "@flash-copy-auto-paste", cfg.auto_paste_enable);
+        cfg.prompt_indicator = get_string(
+            &global,
+            "@flash-copy-prompt-indicator",
+            &cfg.prompt_indicator,
+        );
+        cfg.prompt_colour = get_string(&global, "@flash-copy-prompt-colour", &cfg.prompt_colour);
+        cfg.auto_paste_enable = get_bool(&global, "@flash-copy-auto-paste", cfg.auto_paste_enable);
         cfg.label_characters = get_optional_string(&global, "@flash-copy-label-characters");
         cfg.idle_timeout = get_int(&global, "@flash-copy-idle-timeout", cfg.idle_timeout);
         cfg.idle_warning = get_int(&global, "@flash-copy-idle-warning", cfg.idle_warning);
@@ -142,22 +145,22 @@ impl Config {
             cfg.word_separators = if v.is_empty() { None } else { Some(v.clone()) };
         }
         if let Some(v) = &cli.prompt_position {
-            cfg.prompt_position = v.clone();
+            cfg.prompt_position.clone_from(v);
         }
         if let Some(v) = &cli.prompt_indicator {
-            cfg.prompt_indicator = v.clone();
+            cfg.prompt_indicator.clone_from(v);
         }
         if let Some(v) = &cli.prompt_placeholder_text {
-            cfg.prompt_placeholder_text = v.clone();
+            cfg.prompt_placeholder_text.clone_from(v);
         }
         if let Some(v) = &cli.highlight_colour {
-            cfg.highlight_colour = v.clone();
+            cfg.highlight_colour.clone_from(v);
         }
         if let Some(v) = &cli.label_colour {
-            cfg.label_colour = v.clone();
+            cfg.label_colour.clone_from(v);
         }
         if let Some(v) = &cli.prompt_colour {
-            cfg.prompt_colour = v.clone();
+            cfg.prompt_colour.clone_from(v);
         }
         if let Some(v) = &cli.label_characters {
             cfg.label_characters = if v.is_empty() { None } else { Some(v.clone()) };
@@ -180,7 +183,6 @@ impl Config {
 struct SearchMatch {
     text: String,
     start_pos: usize,
-    end_pos: usize,
     line: usize,
     col: usize,
     label: Option<char>,
@@ -191,7 +193,6 @@ struct SearchMatch {
 
 #[derive(Debug)]
 struct SearchInterface {
-    pane_content: String,
     lines: Vec<String>,
     reverse_search: bool,
     word_separators: Option<String>,
@@ -203,15 +204,14 @@ struct SearchInterface {
 
 impl SearchInterface {
     fn new(
-        pane_content: String,
+        pane_content: &str,
         reverse_search: bool,
         word_separators: Option<String>,
         case_sensitive: bool,
         label_characters: Option<String>,
     ) -> Self {
-        let lines = pane_content.split('\n').map(|s| s.to_string()).collect();
+        let lines = pane_content.split('\n').map(ToString::to_string).collect();
         Self {
-            pane_content,
             lines,
             reverse_search,
             word_separators,
@@ -265,12 +265,11 @@ impl SearchInterface {
                     let match_pos = search_pos + found;
                     let match_end = match_pos + query_cmp.len();
 
-                    let copy_text = determine_copy_text(sequence, match_pos, &separators);
+                    let copy_text = determine_copy_text(sequence, match_pos, separators.as_ref());
 
                     matches.push(SearchMatch {
                         text: sequence.to_string(),
                         start_pos: pos + seq_start,
-                        end_pos: pos + seq_end,
                         line: line_idx,
                         col: seq_start,
                         label: None,
@@ -303,9 +302,14 @@ impl SearchInterface {
             unique.reverse();
         }
 
-        assign_labels(&mut unique, &self.search_query, &self.label_characters, self.case_sensitive);
+        assign_labels(
+            &mut unique,
+            &self.search_query,
+            &self.label_characters,
+            self.case_sensitive,
+        );
 
-        self.matches = unique.clone();
+        self.matches.clone_from(&unique);
         unique
     }
 
@@ -314,10 +318,7 @@ impl SearchInterface {
     }
 
     fn get_matches_at_line(&self, line_num: usize) -> Vec<&SearchMatch> {
-        self.matches
-            .iter()
-            .filter(|m| m.line == line_num)
-            .collect()
+        self.matches.iter().filter(|m| m.line == line_num).collect()
     }
 }
 
@@ -325,7 +326,6 @@ impl SearchInterface {
 struct PaneDimensions {
     left: i32,
     top: i32,
-    right: i32,
     bottom: i32,
     width: i32,
     height: i32,
@@ -348,7 +348,7 @@ impl InteractiveUI {
     fn new(pane_id: String, pane_content: String, config: Config) -> Self {
         let pane_content_plain = strip_ansi_codes(&pane_content);
         let search = SearchInterface::new(
-            pane_content_plain.clone(),
+            &pane_content_plain,
             config.reverse_search,
             config.word_separators.clone(),
             config.case_sensitive,
@@ -382,7 +382,10 @@ impl InteractiveUI {
                 return Ok(());
             }
 
-            let warning_threshold = self.config.idle_timeout.saturating_sub(self.config.idle_warning);
+            let warning_threshold = self
+                .config
+                .idle_timeout
+                .saturating_sub(self.config.idle_warning);
             if !self.timeout_warning_shown
                 && self.config.idle_warning < self.config.idle_timeout
                 && elapsed >= warning_threshold
@@ -411,13 +414,17 @@ impl InteractiveUI {
                     self.save_result("", false)?;
                     return Ok(());
                 }
-                InputChar::Char(';') | InputChar::Char(':') => {
+                InputChar::Char(';' | ':') => {
                     if self.config.auto_paste_enable {
                         self.autopaste_modifier_active = true;
                         continue;
                     }
                     self.autopaste_modifier_active = false;
-                    self.update_search(format!("{}{}", self.search_query, ch.as_char()))?;
+                    self.update_search(format!(
+                        "{search_query}{ch}",
+                        search_query = self.search_query,
+                        ch = ch.as_char()
+                    ))?;
                 }
                 InputChar::CtrlU => {
                     self.autopaste_modifier_active = false;
@@ -444,12 +451,12 @@ impl InteractiveUI {
                     }
                 }
                 InputChar::Char(c) => {
-                    if !self.search_query.is_empty() {
-                        if let Some(match_item) = self.search.get_match_by_label(c) {
-                            let should_paste = self.autopaste_modifier_active;
-                            self.save_result(&match_item.copy_text, should_paste)?;
-                            return Ok(());
-                        }
+                    if !self.search_query.is_empty()
+                        && let Some(match_item) = self.search.get_match_by_label(c)
+                    {
+                        let should_paste = self.autopaste_modifier_active;
+                        self.save_result(&match_item.copy_text, should_paste)?;
+                        return Ok(());
                     }
 
                     if c.is_ascii_graphic() || c == ' ' {
@@ -472,13 +479,19 @@ impl InteractiveUI {
         let mut out = io::stderr();
         out.write_all(b"\x1b[2J\x1b[H")?;
 
-        let lines: Vec<&str> = self.pane_content.trim_end_matches('\n').split('\n').collect();
-        let lines_plain: Vec<&str> =
-            self.pane_content_plain.trim_end_matches('\n').split('\n').collect();
+        let lines: Vec<&str> = self
+            .pane_content
+            .trim_end_matches('\n')
+            .split('\n')
+            .collect();
+        let lines_plain: Vec<&str> = self
+            .pane_content_plain
+            .trim_end_matches('\n')
+            .split('\n')
+            .collect();
 
-        let (width, height) = terminal_size()
-            .map(|(Width(w), Height(h))| (w as usize, h as usize))
-            .unwrap_or((80, 40));
+        let (width, height) =
+            terminal_size().map_or((80, 40), |(Width(w), Height(h))| (w as usize, h as usize));
 
         let available_height = height.saturating_sub(1);
         let mut lines = lines;
@@ -498,11 +511,11 @@ impl InteractiveUI {
             let prompt = self.build_search_bar_output(width);
             out.write_all(prompt.as_bytes())?;
             out.write_all(b"\n")?;
-            out.write_all(format!("\x1b[2;{}r", height).as_bytes())?;
+            out.write_all(format!("\x1b[2;{height}r").as_bytes())?;
             out.write_all(b"\x1b[2;1H")?;
         } else {
             let scroll_bottom = height.saturating_sub(1);
-            out.write_all(format!("\x1b[1;{}r", scroll_bottom).as_bytes())?;
+            out.write_all(format!("\x1b[1;{scroll_bottom}r").as_bytes())?;
             out.write_all(b"\x1b[1;1H")?;
         }
 
@@ -510,14 +523,14 @@ impl InteractiveUI {
 
         if self.config.prompt_position == "top" {
             let cursor_col = self.prompt_cursor_column().max(1);
-            out.write_all(format!("\x1b[1;{}H", cursor_col).as_bytes())?;
+            out.write_all(format!("\x1b[1;{cursor_col}H").as_bytes())?;
         } else {
             let prompt = self.build_search_bar_output(width);
-            out.write_all(format!("\x1b[{};1H", height).as_bytes())?;
+            out.write_all(format!("\x1b[{height};1H").as_bytes())?;
             out.write_all(prompt.as_bytes())?;
 
             let cursor_col = self.prompt_cursor_column();
-            out.write_all(format!("\x1b[{}G", cursor_col).as_bytes())?;
+            out.write_all(format!("\x1b[{cursor_col}G").as_bytes())?;
         }
 
         out.flush()?;
@@ -539,16 +552,16 @@ impl InteractiveUI {
         lines_plain: &[&str],
         available_height: usize,
     ) -> Result<()> {
-        let mut printed = 0usize;
         let total_lines = lines.len().min(available_height);
 
-        for (line_idx, (line, line_plain)) in lines.iter().zip(lines_plain).enumerate() {
-            if printed >= available_height {
-                break;
-            }
-
+        for (line_idx, (line, line_plain)) in lines
+            .iter()
+            .zip(lines_plain)
+            .take(available_height)
+            .enumerate()
+        {
             let matches = self.search.get_matches_at_line(line_idx);
-            let is_last_line = printed == total_lines.saturating_sub(1);
+            let is_last_line = line_idx + 1 == total_lines;
 
             let output = if matches.is_empty() {
                 if self.search_query.is_empty() {
@@ -562,12 +575,7 @@ impl InteractiveUI {
                 } else {
                     dim_coloured_line(line)
                 };
-                display_line_with_matches(
-                    &dimmed,
-                    line_plain,
-                    &matches,
-                    &self.config,
-                )
+                display_line_with_matches(&dimmed, line_plain, &matches, &self.config)
             };
 
             if is_last_line {
@@ -576,8 +584,6 @@ impl InteractiveUI {
                 out.write_all(output.as_bytes())?;
                 out.write_all(b"\n")?;
             }
-
-            printed += 1;
         }
 
         Ok(())
@@ -585,13 +591,7 @@ impl InteractiveUI {
 
     fn build_search_bar_output(&self, term_width: usize) -> String {
         let mut base = String::new();
-        if !self.search_query.is_empty() {
-            base.push_str(&self.config.prompt_colour);
-            base.push_str(&self.config.prompt_indicator);
-            base.push_str(ANSI_RESET);
-            base.push(' ');
-            base.push_str(&self.search_query);
-        } else {
+        if self.search_query.is_empty() {
             base.push_str(&self.config.prompt_colour);
             base.push_str(&self.config.prompt_indicator);
             base.push_str(ANSI_RESET);
@@ -599,6 +599,12 @@ impl InteractiveUI {
             base.push_str(ANSI_DIM);
             base.push_str(&self.config.prompt_placeholder_text);
             base.push_str(ANSI_RESET);
+        } else {
+            base.push_str(&self.config.prompt_colour);
+            base.push_str(&self.config.prompt_indicator);
+            base.push_str(ANSI_RESET);
+            base.push(' ');
+            base.push_str(&self.search_query);
         }
 
         if self.timeout_warning_shown {
@@ -606,7 +612,7 @@ impl InteractiveUI {
                 .config
                 .idle_timeout
                 .saturating_sub(self.start_time.elapsed().as_secs());
-            let warning_text = format!("Idle, terminating in {}s...", remaining);
+            let warning_text = format!("Idle, terminating in {remaining}s...");
             let base_len = visible_length(&base);
             let warning_len = visible_length(&warning_text);
             if base_len + warning_len + 3 < term_width {
@@ -622,14 +628,9 @@ impl InteractiveUI {
     }
 
     fn save_result(&self, text: &str, should_paste: bool) -> Result<()> {
-        let buffer = format!("__flash_copy_result_{}__", self.pane_id);
-        tmux_run_quiet(&[
-            "set-buffer",
-            "-b",
-            &buffer,
-            "--",
-            text,
-        ]);
+        let pane_id = &self.pane_id;
+        let buffer = format!("__flash_copy_result_{pane_id}__");
+        tmux_run_quiet(&["set-buffer", "-b", &buffer, "--", text]);
         std::process::exit(if should_paste { 10 } else { 0 });
     }
 }
@@ -696,7 +697,8 @@ fn read_char_timeout(timeout: Duration) -> Result<Option<InputChar>> {
     let fd = io::stdin().as_raw_fd();
     let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
     let mut fds = [PollFd::new(fd_borrowed, PollFlags::POLLIN)];
-    let timeout_ms = timeout.as_millis().min(u16::MAX as u128) as u16;
+    let timeout_ms =
+        u16::try_from(timeout.as_millis().min(u128::from(u16::MAX))).unwrap_or(u16::MAX);
     let res = poll(&mut fds, PollTimeout::from(timeout_ms)).context("poll failed")?;
     if res == 0 {
         return Ok(None);
@@ -782,11 +784,10 @@ fn delete_prev_word(input: &str) -> String {
     }
 
     while let Some(&c) = chars.last() {
-        if !delimiters.contains(&c) {
-            chars.pop();
-        } else {
+        if delimiters.contains(&c) {
             break;
         }
+        chars.pop();
     }
 
     chars.into_iter().collect()
@@ -799,7 +800,7 @@ fn dim_coloured_line(line: &str) -> String {
 
     let mut out = String::new();
     out.push_str(ANSI_DIM);
-    out.push_str(&line.replace(ANSI_RESET, &format!("{}{}", ANSI_RESET, ANSI_DIM)));
+    out.push_str(&line.replace(ANSI_RESET, &format!("{ANSI_RESET}{ANSI_DIM}")));
     if !line.ends_with(ANSI_RESET) {
         out.push_str(ANSI_RESET);
     }
@@ -827,9 +828,13 @@ fn display_line_with_matches(
         let plain_match_end = word_start + m.match_end;
         let plain_replace_index = plain_match_end;
 
-        let coloured_replace_start = map_position_to_coloured(&display, plain_replace_index, &mut pos_cache, cache_line_id);
+        let coloured_replace_start =
+            map_position_to_coloured(&display, plain_replace_index, &mut pos_cache, cache_line_id);
         let coloured_skip_len = advance_plain_chars(&display[coloured_replace_start..], 1);
-        let coloured_label = format!("{}{}{}", config.label_colour, label, ANSI_RESET);
+        let coloured_label = format!(
+            "{label_colour}{label}{ANSI_RESET}",
+            label_colour = config.label_colour
+        );
 
         if plain_replace_index < line_plain.len() {
             let mut new = String::new();
@@ -847,14 +852,19 @@ fn display_line_with_matches(
 
         cache_line_id += 1;
 
-        let coloured_match_start = map_position_to_coloured(&display, plain_match_start, &mut pos_cache, cache_line_id);
-        let coloured_match_end = map_position_to_coloured(&display, plain_match_end, &mut pos_cache, cache_line_id);
+        let coloured_match_start =
+            map_position_to_coloured(&display, plain_match_start, &mut pos_cache, cache_line_id);
+        let coloured_match_end =
+            map_position_to_coloured(&display, plain_match_end, &mut pos_cache, cache_line_id);
         let plain_matched_part = &m.text[m.match_start..m.match_end];
 
         let before = display[..coloured_match_start].to_string();
         let after = display[coloured_match_end..].to_string();
-        let highlighted = format!("{}{}{}{}", ANSI_RESET, config.highlight_colour, plain_matched_part, ANSI_RESET);
-        display = format!("{}{}{}", before, highlighted, after);
+        let highlighted = format!(
+            "{ANSI_RESET}{highlight_colour}{plain_matched_part}{ANSI_RESET}",
+            highlight_colour = config.highlight_colour
+        );
+        display = format!("{before}{highlighted}{after}");
 
         cache_line_id += 1;
     }
@@ -1012,7 +1022,7 @@ fn find_sequences(line: &str) -> Vec<(usize, usize)> {
 fn determine_copy_text(
     sequence: &str,
     match_pos: usize,
-    separators: &Option<HashSet<char>>,
+    separators: Option<&HashSet<char>>,
 ) -> String {
     let Some(sep) = separators else {
         return sequence.to_string();
@@ -1032,11 +1042,7 @@ fn determine_copy_text(
         }
     }
 
-    let (start, end) = segments
-        .iter()
-        .max_by_key(|(s, e)| e - s)
-        .copied()
-        .unwrap();
+    let (start, end) = segments.iter().max_by_key(|(s, e)| e - s).copied().unwrap();
     sequence[start..end].to_string()
 }
 
@@ -1080,7 +1086,11 @@ fn assign_labels(
     for m in matches.iter() {
         if m.match_end < m.text.len() {
             let next = m.text[m.match_end..].chars().next().unwrap_or('\0');
-            continuation_chars.insert(if case_sensitive { next } else { next.to_ascii_lowercase() });
+            continuation_chars.insert(if case_sensitive {
+                next
+            } else {
+                next.to_ascii_lowercase()
+            });
         }
     }
 
@@ -1098,7 +1108,11 @@ fn assign_labels(
             if used.contains(&c) {
                 continue;
             }
-            let c_cmp = if case_sensitive { c } else { c.to_ascii_lowercase() };
+            let c_cmp = if case_sensitive {
+                c
+            } else {
+                c.to_ascii_lowercase()
+            };
             if query_chars.contains(&c_cmp)
                 || continuation_chars.contains(&c_cmp)
                 || match_chars.contains(&c_cmp)
@@ -1115,8 +1129,7 @@ fn assign_labels(
 }
 
 fn get_tmux_pane_id() -> Result<String> {
-    tmux_output(&["display-message", "-p", "#{pane_id}"])
-        .context("failed to get pane id")
+    tmux_output(&["display-message", "-p", "#{pane_id}"]).context("failed to get pane id")
 }
 
 fn capture_pane(pane_id: &str) -> Result<String> {
@@ -1148,7 +1161,6 @@ fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
     Some(PaneDimensions {
         left: parts[0],
         top: parts[1],
-        right: parts[2],
         bottom: parts[3],
         width: parts[4],
         height: parts[5],
@@ -1187,7 +1199,11 @@ fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
 }
 
 fn tmux_run_quiet(args: &[&str]) -> bool {
-    Command::new("tmux").args(args).output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("tmux")
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn read_tmux_options_global() -> HashMap<String, String> {
@@ -1241,21 +1257,21 @@ fn unescape_tmux_value(value: &str) -> String {
             Some('x') => {
                 let hi = chars.next();
                 let lo = chars.next();
-                if let (Some(hi), Some(lo)) = (hi, lo) {
-                    if let Ok(v) = u8::from_str_radix(&format!("{}{}", hi, lo), 16) {
-                        out.push(v as char);
-                    }
+                if let (Some(hi), Some(lo)) = (hi, lo)
+                    && let Ok(v) = u8::from_str_radix(&format!("{hi}{lo}"), 16)
+                {
+                    out.push(v as char);
                 }
             }
             Some(first @ '0'..='7') => {
                 let mut octal = String::new();
                 octal.push(first);
                 for _ in 0..2 {
-                    if let Some(&next) = chars.peek() {
-                        if ('0'..='7').contains(&next) {
-                            octal.push(next);
-                            chars.next();
-                        }
+                    if let Some(&next) = chars.peek()
+                        && ('0'..='7').contains(&next)
+                    {
+                        octal.push(next);
+                        chars.next();
                     }
                 }
                 if let Ok(v) = u8::from_str_radix(&octal, 8) {
@@ -1274,7 +1290,7 @@ fn parse_bool(value: &str) -> bool {
 }
 
 fn get_bool(map: &HashMap<String, String>, key: &str, default: bool) -> bool {
-    map.get(key).map(|v| parse_bool(v)).unwrap_or(default)
+    map.get(key).map_or(default, |v| parse_bool(v))
 }
 
 fn get_string(map: &HashMap<String, String>, key: &str, default: &str) -> String {
@@ -1300,6 +1316,7 @@ fn get_int(map: &HashMap<String, String>, key: &str, default: u64) -> u64 {
     map.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+#[derive(Clone, Copy)]
 enum TrimMode {
     Trim,
     TrimNewlines,
@@ -1367,7 +1384,7 @@ fn run_parent() -> Result<()> {
     let pane_content = capture_pane(&pane_id).unwrap_or_default();
     let config = Config::from_tmux();
 
-    let pane_buffer = format!("__flash_copy_pane_content_{}__", pane_id);
+    let pane_buffer = format!("__flash_copy_pane_content_{pane_id}__");
     let _ = tmux_run_quiet(&["set-buffer", "-b", &pane_buffer, "--", &pane_content]);
 
     let (x, y, w, h) = if let Some(dimensions) = get_pane_dimensions(&pane_id) {
@@ -1384,52 +1401,53 @@ fn run_parent() -> Result<()> {
     let exe = std::env::current_exe().context("failed to locate executable")?;
     let exe = exe.to_string_lossy().to_string();
 
-    let mut args = Vec::new();
-    args.push("display-popup".to_string());
-    args.push("-E".to_string());
-    args.push("-B".to_string());
-    args.push("-x".to_string());
-    args.push(x.to_string());
-    args.push("-y".to_string());
-    args.push(y.to_string());
-    args.push("-w".to_string());
-    args.push(w.to_string());
-    args.push("-h".to_string());
-    args.push(h.to_string());
-    args.push(exe);
-    args.push("--interactive".to_string());
-    args.push("--pane-id".to_string());
-    args.push(pane_id.clone());
-    args.push("--reverse-search".to_string());
-    args.push(config.reverse_search.to_string());
-    args.push("--word-separators".to_string());
-    args.push(config.word_separators.clone().unwrap_or_default());
-    args.push("--case-sensitive".to_string());
-    args.push(config.case_sensitive.to_string());
-    args.push("--prompt-placeholder-text".to_string());
-    args.push(config.prompt_placeholder_text.clone());
-    args.push("--highlight-colour".to_string());
-    args.push(config.highlight_colour.clone());
-    args.push("--label-colour".to_string());
-    args.push(config.label_colour.clone());
-    args.push("--prompt-position".to_string());
-    args.push(config.prompt_position.clone());
-    args.push("--prompt-indicator".to_string());
-    args.push(config.prompt_indicator.clone());
-    args.push("--prompt-colour".to_string());
-    args.push(config.prompt_colour.clone());
-    args.push("--label-characters".to_string());
-    args.push(config.label_characters.clone().unwrap_or_default());
-    args.push("--auto-paste".to_string());
-    args.push(config.auto_paste_enable.to_string());
-    args.push("--idle-timeout".to_string());
-    args.push(config.idle_timeout.to_string());
-    args.push("--idle-warning".to_string());
-    args.push(config.idle_warning.to_string());
+    let args = vec![
+        "display-popup".to_string(),
+        "-E".to_string(),
+        "-B".to_string(),
+        "-x".to_string(),
+        x.to_string(),
+        "-y".to_string(),
+        y.to_string(),
+        "-w".to_string(),
+        w.to_string(),
+        "-h".to_string(),
+        h.to_string(),
+        exe,
+        "--interactive".to_string(),
+        "--pane-id".to_string(),
+        pane_id.clone(),
+        "--reverse-search".to_string(),
+        config.reverse_search.to_string(),
+        "--word-separators".to_string(),
+        config.word_separators.clone().unwrap_or_default(),
+        "--case-sensitive".to_string(),
+        config.case_sensitive.to_string(),
+        "--prompt-placeholder-text".to_string(),
+        config.prompt_placeholder_text.clone(),
+        "--highlight-colour".to_string(),
+        config.highlight_colour.clone(),
+        "--label-colour".to_string(),
+        config.label_colour.clone(),
+        "--prompt-position".to_string(),
+        config.prompt_position.clone(),
+        "--prompt-indicator".to_string(),
+        config.prompt_indicator.clone(),
+        "--prompt-colour".to_string(),
+        config.prompt_colour.clone(),
+        "--label-characters".to_string(),
+        config.label_characters.clone().unwrap_or_default(),
+        "--auto-paste".to_string(),
+        config.auto_paste_enable.to_string(),
+        "--idle-timeout".to_string(),
+        config.idle_timeout.to_string(),
+        "--idle-warning".to_string(),
+        config.idle_warning.to_string(),
+    ];
 
     let status = run_tmux_status(&args)?;
 
-    let result_buffer = format!("__flash_copy_result_{}__", pane_id);
+    let result_buffer = format!("__flash_copy_result_{pane_id}__");
     let result_text = tmux_output_trim(
         &["show-buffer", "-b", &result_buffer],
         TrimMode::TrimNewlines,
@@ -1453,17 +1471,17 @@ fn run_tmux_status(args: &[String]) -> Result<ExitStatus> {
     Ok(status)
 }
 
-fn run_interactive(cli: Cli) -> Result<()> {
-    let pane_id = cli.pane_id.clone().context("pane-id is required in interactive mode")?;
-    let config = Config::from_args(&cli);
+fn run_interactive(cli: &Cli) -> Result<()> {
+    let pane_id = cli
+        .pane_id
+        .clone()
+        .context("pane-id is required in interactive mode")?;
+    let config = Config::from_args(cli);
 
-    let pane_buffer = format!("__flash_copy_pane_content_{}__", pane_id);
-    let pane_content = tmux_output_trim(
-        &["show-buffer", "-b", &pane_buffer],
-        TrimMode::None,
-    )
-    .ok()
-    .unwrap_or_else(|| capture_pane(&pane_id).unwrap_or_default());
+    let pane_buffer = format!("__flash_copy_pane_content_{pane_id}__");
+    let pane_content = tmux_output_trim(&["show-buffer", "-b", &pane_buffer], TrimMode::None)
+        .ok()
+        .unwrap_or_else(|| capture_pane(&pane_id).unwrap_or_default());
 
     let mut ui = InteractiveUI::new(pane_id, pane_content, config);
     ui.run()?;
@@ -1474,7 +1492,7 @@ fn run_interactive(cli: Cli) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.interactive {
-        run_interactive(cli)
+        run_interactive(&cli)
     } else {
         run_parent()
     }
