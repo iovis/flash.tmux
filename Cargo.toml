@@ -1,6 +1,6 @@
 [package]
 name = "flash_tmux"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A tmux plugin inspired by folke/flash.nvim and Kristijan/flash-copy.tmux to quickly copy text from your tmux pane."
 readme = "README.md"
