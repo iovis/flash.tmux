@@ -1,17 +1,31 @@
 # flash.tmux
 
-A tmux plugin inspired by [flash.nvim](https://github.com/folke/flash.nvim) that enables you to search visible strings in the current tmux pane and copy it to system clipboard by pressing the associated label key.
+Standalone Rust CLI for a tmux "flash copy" workflow inspired by
+[flash.nvim](https://github.com/folke/flash.nvim) and
+[flash-copy.tmux](https://github.com/Kristijan/flash-copy.tmux).
 
-> [!NOTE]
-> This is a fork/rewrite of [flash-copy.tmux](https://github.com/Kristijan/flash-copy.tmux)
-> Configurations are removed and some behaviors are changed.
+Quickly copy text from a tmux pane by searching and selecting it with
+labeled keys.
+
+## Requirements
+
+- tmux with `display-popup` support.
+- Clipboard support via tmux (OSC52) or one of: `pbcopy`, `xclip`, `xsel`.
 
 ## Install
 
-Install with cargo:
+From crates.io:
 
 ```bash
 cargo install flash_tmux
+```
+
+From source:
+
+```bash
+git clone https://github.com/iovis/flash.tmux
+cd flash.tmux
+cargo install --path .
 ```
 
 ## tmux setup
@@ -19,25 +33,26 @@ cargo install flash_tmux
 Add a binding in `~/.tmux.conf`:
 
 ```tmux
-bind F run flash_tmux
+bind-key F run-shell "flash_tmux"
 ```
 
 ## Usage
 
-- Type to search (ASCII case-insensitive)
-- Labels are lowercase
-- Lowercase label copies and auto-pastes
-- Uppercase label copies only
-- Enter or Space selects the first match (auto-paste)
-- Exit with Esc, Ctrl-C, or Ctrl-D
+- Type to search (ASCII case-insensitive).
+- Labels are lowercase; press a label to select.
+  - Lowercase: copy + paste.
+  - Uppercase: copy only.
+- Enter: paste and send Enter.
+- Space: paste and send Space.
+- Cancel with Esc, Ctrl-C, or Ctrl-D.
+- Edit query with Backspace, Ctrl-U (clear), Ctrl-W (delete word).
 
 ## Matching behavior
 
+- Only the visible pane content can be matched.
 - Matches are whitespace-delimited tokens.
-- If a token is wrapped by `()`, `[]`, `{}`, double quotes, single quotes, or backticks, and the match is inside those wrappers, the outer wrapper is stripped before copying/pasting.
-  - Example: `(/home/user/project)` -> `/home/user/project`
-
-## Notes
-
-- Clipboard uses tmux buffers (OSC52 via `set-buffer -w`) with OS fallbacks when available.
-- ANSI handling assumes ANSI SGR (`\x1b[...m`) codes for color resets/highlights.
+- Substring matches within a token are allowed.
+- If a token is wrapped by `()`, `[]`, `{}`, quotes, or backticks, and the
+  match is inside those wrappers, the outer wrapper is stripped before
+  copying/pasting.
+  - Example: `(/home/user/project)` → `/home/user/project`
