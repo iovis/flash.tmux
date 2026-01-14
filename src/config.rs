@@ -1,4 +1,10 @@
-use crossterm::style::{self, Attribute, Color, SetAttribute, Stylize};
+use crossterm::style::{self, Attribute, Color, SetAttribute, SetForegroundColor, Stylize};
+
+const BASE_TEXT_COLOR: Color = Color::Rgb {
+    r: 148,
+    g: 156,
+    b: 187,
+};
 
 #[derive(Clone)]
 pub struct Config {
@@ -10,6 +16,7 @@ pub struct Config {
     pub current_style: StyleSpec,
     pub label_style: StyleSpec,
     pub prompt_style: StyleSpec,
+    pub base_style: StyleSpec,
     pub style_sequences: StyleSequences,
 }
 
@@ -37,6 +44,7 @@ impl Config {
             }))
             .bold(),
             prompt_style: StyleSpec::new(Some(Color::Magenta)).bold(),
+            base_style: StyleSpec::new(Some(BASE_TEXT_COLOR)),
             style_sequences: StyleSequences::new(),
         }
     }
@@ -74,7 +82,7 @@ impl StyleSpec {
 #[derive(Clone)]
 pub struct StyleSequences {
     pub reset: String,
-    pub dim: String,
+    pub base: String,
 }
 
 impl StyleSequences {
@@ -82,7 +90,7 @@ impl StyleSequences {
     pub fn new() -> Self {
         Self {
             reset: format!("{}", SetAttribute(Attribute::Reset)),
-            dim: format!("{}", SetAttribute(Attribute::Dim)),
+            base: format!("{}", SetForegroundColor(BASE_TEXT_COLOR)),
         }
     }
 }

@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::style::{self, Attribute, Stylize};
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, execute};
 use std::io::{self, IsTerminal, Write};
@@ -196,7 +195,10 @@ impl InteractiveUI {
                     .apply(&self.config.prompt_indicator),
             );
             base.push(' ');
-            base.push_str(&dim_text(&self.config.prompt_placeholder_text));
+            base.push_str(&base_text(
+                &self.config.prompt_placeholder_text,
+                &self.config,
+            ));
         } else {
             base.push_str(
                 &self
@@ -264,8 +266,8 @@ impl StyleKind {
     }
 }
 
-fn dim_text(text: &str) -> String {
-    format!("{}", style::style(text).attribute(Attribute::Dim))
+fn base_text(text: &str, config: &Config) -> String {
+    config.base_style.apply(text)
 }
 
 fn render_line_with_matches(
@@ -277,13 +279,13 @@ fn render_line_with_matches(
     if line.is_empty() {
         return format!(
             "{}{}",
-            config.style_sequences.dim, config.style_sequences.reset
+            config.style_sequences.base, config.style_sequences.reset
         );
     }
     if matches.is_empty() {
         return format!(
             "{}{}{}",
-            config.style_sequences.dim, line, config.style_sequences.reset
+            config.style_sequences.base, line, config.style_sequences.reset
         );
     }
 
@@ -317,7 +319,7 @@ fn render_line_with_matches(
     }
 
     let mut out = String::new();
-    out.push_str(&config.style_sequences.dim);
+    out.push_str(&config.style_sequences.base);
 
     let mut active = StyleKind::Base;
     let mut buffer = String::new();
@@ -329,7 +331,7 @@ fn render_line_with_matches(
             out.push_str(&config.style_sequences.reset);
             out.push_str(&config.label_style.apply(&label.to_string()));
             out.push_str(&config.style_sequences.reset);
-            out.push_str(&config.style_sequences.dim);
+            out.push_str(&config.style_sequences.base);
             continue;
         }
 
@@ -347,7 +349,7 @@ fn render_line_with_matches(
         out.push_str(&config.style_sequences.reset);
         out.push_str(&config.label_style.apply(&label.to_string()));
         out.push_str(&config.style_sequences.reset);
-        out.push_str(&config.style_sequences.dim);
+        out.push_str(&config.style_sequences.base);
     }
 
     flush_segment(&mut out, &mut buffer, active, config);
@@ -370,13 +372,13 @@ fn flush_segment(out: &mut String, buffer: &mut String, style: StyleKind, config
             out.push_str(&config.style_sequences.reset);
             out.push_str(&config.highlight_style.apply(buffer));
             out.push_str(&config.style_sequences.reset);
-            out.push_str(&config.style_sequences.dim);
+            out.push_str(&config.style_sequences.base);
         }
         StyleKind::Current => {
             out.push_str(&config.style_sequences.reset);
             out.push_str(&config.current_style.apply(buffer));
             out.push_str(&config.style_sequences.reset);
-            out.push_str(&config.style_sequences.dim);
+            out.push_str(&config.style_sequences.base);
         }
     }
 
