@@ -1,9 +1,9 @@
 use crossterm::style::{self, Attribute, Color, SetAttribute, SetForegroundColor, Stylize};
 
 const BASE_TEXT_COLOR: Color = Color::Rgb {
-    r: 148,
-    g: 156,
-    b: 187,
+    r: 115,
+    g: 121,
+    b: 148,
 };
 
 #[derive(Clone)]
