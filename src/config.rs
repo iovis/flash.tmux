@@ -31,12 +31,14 @@ impl Config {
                 r: 186,
                 g: 187,
                 b: 242,
-            })),
+            }))
+            .bold(),
             current_style: StyleSpec::new(Some(Color::Rgb {
                 r: 239,
                 g: 159,
                 b: 119,
-            })),
+            }))
+            .bold(),
             label_style: StyleSpec::new(Some(Color::Rgb {
                 r: 166,
                 g: 209,
