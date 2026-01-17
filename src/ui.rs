@@ -64,7 +64,7 @@ impl InteractiveUI {
                                 self.update_search(new_query)?;
                             }
                         }
-                        KeyCode::Enter | KeyCode::Char(' ') if !ctrl => {
+                        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab if !ctrl => {
                             let max_lines = Self::visible_line_limit();
                             if let Some(first) = self.search.first_visible_match(max_lines) {
                                 let text = trim_wrapping_token(
@@ -73,10 +73,10 @@ impl InteractiveUI {
                                     first.match_end,
                                     &self.config.trimmable_chars,
                                 );
-                                let action = if matches!(key.code, KeyCode::Enter) {
-                                    ExitAction::PasteAndEnter
-                                } else {
-                                    ExitAction::PasteAndSpace
+                                let action = match key.code {
+                                    KeyCode::Enter => ExitAction::PasteAndEnter,
+                                    KeyCode::Char(' ') => ExitAction::PasteAndSpace,
+                                    _ => ExitAction::Paste,
                                 };
                                 self.save_result(text, action)?;
                                 return Ok(());
