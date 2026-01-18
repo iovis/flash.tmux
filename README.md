@@ -42,10 +42,9 @@ bind-key F run-shell "flash_tmux"
 - Labels are lowercase; press a label to select.
   - Lowercase: copy + paste.
   - Uppercase: copy only.
+- Tab: paste current match
 - Enter: paste and send Enter.
 - Space: paste and send Space.
-- Cancel with Esc, Ctrl-C, or Ctrl-D.
-- Edit query with Backspace, Ctrl-U (clear), Ctrl-W (delete word).
 
 ## Matching behavior
 

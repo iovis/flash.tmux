@@ -15,6 +15,7 @@ pub struct InteractiveUI {
     config: Config,
     search: SearchInterface,
     search_query: String,
+    cursor_pos: usize,
 }
 
 impl InteractiveUI {
@@ -27,9 +28,11 @@ impl InteractiveUI {
             config,
             search,
             search_query: String::new(),
+            cursor_pos: 0,
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn run(&mut self) -> Result<()> {
         let _term_guard = TerminalModeGuard::new()?;
 
@@ -41,30 +44,50 @@ impl InteractiveUI {
                 Event::Resize(_, _) => self.display_content()?,
                 Event::Key(key) => {
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                    match key.code {
-                        KeyCode::Char('c' | 'd') if ctrl => {
+                    match (key.code, ctrl) {
+                        (KeyCode::Char('c' | 'd'), true) | (KeyCode::Esc, _) => {
                             self.save_result("", ExitAction::Cancel)?;
                             return Ok(());
                         }
-                        KeyCode::Esc => {
-                            self.save_result("", ExitAction::Cancel)?;
-                            return Ok(());
+                        (KeyCode::Char('a'), true) | (KeyCode::Home, _) => {
+                            self.cursor_pos = 0;
+                            self.display_content()?;
                         }
-                        KeyCode::Char('u') if ctrl => {
+                        (KeyCode::Char('e'), true) | (KeyCode::End, _) => {
+                            self.cursor_pos = self.search_query.len();
+                            self.display_content()?;
+                        }
+                        (KeyCode::Left, _) => {
+                            self.cursor_pos = self.cursor_pos.saturating_sub(1);
+                            self.display_content()?;
+                        }
+                        (KeyCode::Right, _) => {
+                            if self.cursor_pos < self.search_query.len() {
+                                self.cursor_pos += 1;
+                                self.display_content()?;
+                            }
+                        }
+                        (KeyCode::Char('u'), true) => {
+                            self.cursor_pos = 0;
                             self.update_search(String::new())?;
                         }
-                        KeyCode::Char('w') if ctrl => {
-                            let new_query = delete_prev_word(&self.search_query);
+                        (KeyCode::Char('w'), true) => {
+                            let (head, tail) = self.search_query.split_at(self.cursor_pos);
+                            let new_head = delete_prev_word(head);
+                            let new_cursor = new_head.len();
+                            let new_query = format!("{new_head}{tail}");
+                            self.cursor_pos = new_cursor;
                             self.update_search(new_query)?;
                         }
-                        KeyCode::Backspace => {
-                            if !self.search_query.is_empty() {
+                        (KeyCode::Backspace, _) => {
+                            if self.cursor_pos > 0 {
                                 let mut new_query = self.search_query.clone();
-                                new_query.pop();
+                                new_query.remove(self.cursor_pos - 1);
+                                self.cursor_pos = self.cursor_pos.saturating_sub(1);
                                 self.update_search(new_query)?;
                             }
                         }
-                        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab if !ctrl => {
+                        (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab, false) => {
                             let max_lines = Self::visible_line_limit();
                             if let Some(first) = self.search.first_visible_match(max_lines) {
                                 let text = trim_wrapping_token(
@@ -82,7 +105,7 @@ impl InteractiveUI {
                                 return Ok(());
                             }
                         }
-                        KeyCode::Char(c) if !ctrl => {
+                        (KeyCode::Char(c), false) => {
                             let label_lookup = c.to_ascii_lowercase();
                             if !self.search_query.is_empty()
                                 && let Some(match_item) =
@@ -105,7 +128,8 @@ impl InteractiveUI {
 
                             if c.is_ascii_graphic() || c == ' ' {
                                 let mut new_query = self.search_query.clone();
-                                new_query.push(c);
+                                new_query.insert(self.cursor_pos, c);
+                                self.cursor_pos += 1;
                                 self.update_search(new_query)?;
                             }
                         }
@@ -119,6 +143,7 @@ impl InteractiveUI {
 
     fn update_search(&mut self, new_query: String) -> Result<()> {
         self.search_query = new_query;
+        self.cursor_pos = self.cursor_pos.min(self.search_query.len());
         self.search.search(&self.search_query);
         self.display_content()
     }
@@ -154,8 +179,9 @@ impl InteractiveUI {
 
     fn prompt_cursor_column(&self) -> usize {
         let mut col = UnicodeWidthStr::width(self.config.prompt_indicator.as_str()) + 2;
-        if !self.search_query.is_empty() {
-            col += UnicodeWidthStr::width(self.search_query.as_str());
+        if self.cursor_pos > 0 {
+            let cursor_slice = &self.search_query[..self.cursor_pos];
+            col += UnicodeWidthStr::width(cursor_slice);
         }
         col
     }
