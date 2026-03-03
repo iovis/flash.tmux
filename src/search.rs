@@ -93,10 +93,6 @@ impl SearchInterface {
         self.matches.iter().find(|m| m.label == Some(label))
     }
 
-    pub fn first_match(&self) -> Option<&SearchMatch> {
-        self.matches.first()
-    }
-
     pub fn first_visible_match(&self, max_lines: usize) -> Option<&SearchMatch> {
         self.matches.iter().find(|m| m.line < max_lines)
     }
