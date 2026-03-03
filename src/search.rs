@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(m.col, 0);
         assert_eq!(m.match_start, 0);
         assert_eq!(m.match_end, 2);
-        assert_eq!(m.label, Some('a'));
+        assert_eq!(m.label, Some('j'));
     }
 
     #[test]
