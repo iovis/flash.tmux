@@ -47,10 +47,11 @@ impl ExitAction {
 
     pub fn from_exit_code(code: Option<i32>) -> Self {
         match code {
+            Some(0) => ExitAction::CopyOnly,
             Some(EXIT_CODE_PASTE) => ExitAction::Paste,
             Some(EXIT_CODE_PASTE_AND_ENTER) => ExitAction::PasteAndEnter,
             Some(EXIT_CODE_PASTE_AND_SPACE) => ExitAction::PasteAndSpace,
-            _ => ExitAction::CopyOnly,
+            _ => ExitAction::Cancel,
         }
     }
 }
