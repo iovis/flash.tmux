@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use std::io::Write;
 use std::process::Command;
 
 const EXIT_CODE_PASTE: i32 = 10;
@@ -159,27 +158,18 @@ pub struct Clipboard;
 
 impl Clipboard {
     pub fn copy(text: &str) -> bool {
-        if std::env::var_os("TMUX").is_none() {
-            return false;
-        }
         if tmux_run_quiet(&["set-buffer", "-w", "--", text]) {
             return true;
         }
 
-        if cfg!(target_os = "macos") {
-            return run_with_input("pbcopy", &[], text);
-        }
+        let _ = Command::new("tmux")
+            .args([
+                "display-message",
+                "flash.tmux: failed to copy to clipboard (OSC52)",
+            ])
+            .status();
 
-        if cfg!(target_os = "linux") {
-            if run_with_input("xclip", &["-selection", "clipboard"], text) {
-                return true;
-            }
-            if run_with_input("xsel", &["--clipboard", "--input"], text) {
-                return true;
-            }
-        }
-
-        tmux_run_quiet(&["set-buffer", "--", text])
+        false
     }
 
     pub fn copy_and_paste(
@@ -262,21 +252,4 @@ fn send_keys(pane_id: &str, key: ForwardKey) -> bool {
         ForwardKey::Space => "Space",
     };
     tmux_run_quiet(&["send-keys", "-t", pane_id, key_name])
-}
-
-fn run_with_input(cmd: &str, args: &[&str], input: &str) -> bool {
-    Command::new(cmd)
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .and_then(|mut child| {
-            if let Some(stdin) = child.stdin.as_mut() {
-                stdin.write_all(input.as_bytes())?;
-            }
-            child.wait()
-        })
-        .map(|status| status.success())
-        .unwrap_or(false)
 }
