@@ -300,3 +300,62 @@ fn send_keys(pane_id: &str, key: ForwardKey) -> bool {
     };
     tmux_run_quiet(&["send-keys", "-t", pane_id, key_name])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_action_round_trip_paste() {
+        let code = ExitAction::Paste.exit_code();
+        assert!(ExitAction::from_exit_code(Some(code)).should_paste());
+        assert!(
+            ExitAction::from_exit_code(Some(code))
+                .forward_key()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn exit_action_round_trip_paste_and_enter() {
+        let code = ExitAction::PasteAndEnter.exit_code();
+        assert!(ExitAction::from_exit_code(Some(code)).should_paste());
+        assert!(matches!(
+            ExitAction::from_exit_code(Some(code)).forward_key(),
+            Some(ForwardKey::Enter)
+        ));
+    }
+
+    #[test]
+    fn exit_action_round_trip_paste_and_space() {
+        let code = ExitAction::PasteAndSpace.exit_code();
+        assert!(ExitAction::from_exit_code(Some(code)).should_paste());
+        assert!(matches!(
+            ExitAction::from_exit_code(Some(code)).forward_key(),
+            Some(ForwardKey::Space)
+        ));
+    }
+
+    #[test]
+    fn exit_action_round_trip_copy_only() {
+        let code = ExitAction::CopyOnly.exit_code();
+        assert!(!ExitAction::from_exit_code(Some(code)).should_paste());
+    }
+
+    #[test]
+    fn exit_action_cancel_and_copy_only_share_exit_code() {
+        // Cancel and CopyOnly both use exit code 0.
+        // The parent distinguishes them by whether the result buffer is empty.
+        assert_eq!(
+            ExitAction::Cancel.exit_code(),
+            ExitAction::CopyOnly.exit_code()
+        );
+        assert_eq!(ExitAction::Cancel.exit_code(), 0);
+    }
+
+    #[test]
+    fn exit_action_unknown_code_is_cancel() {
+        assert!(!ExitAction::from_exit_code(Some(99)).should_paste());
+        assert!(!ExitAction::from_exit_code(None).should_paste());
+    }
+}
