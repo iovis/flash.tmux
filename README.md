@@ -10,7 +10,7 @@ labeled keys.
 ## Requirements
 
 - tmux with `display-popup` support.
-- Clipboard support via tmux (OSC52) or one of: `pbcopy`, `xclip`, `xsel`.
+- Clipboard support via tmux `set-buffer -w` (OSC52-capable terminal).
 
 ## Install
 
