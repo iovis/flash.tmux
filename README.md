@@ -46,6 +46,12 @@ bind-key F run-shell "flash_tmux"
 - Enter: paste and send Enter.
 - Space: paste and send Space.
 
+### Options
+
+- `-r`, `--reverse-label`: Reverse label behavior.
+  - Lowercase: copy only.
+  - Uppercase: copy + paste.
+
 ## Matching behavior
 
 - Only the visible pane content can be matched.

@@ -112,9 +112,17 @@ impl InteractiveUI {
                                     self.search.get_match_by_label(label_lookup)
                             {
                                 let action = if c.is_ascii_lowercase() {
-                                    ExitAction::Paste
+                                    if self.config.reverse_label {
+                                        ExitAction::CopyOnly
+                                    } else {
+                                        ExitAction::Paste
+                                    }
                                 } else {
-                                    ExitAction::CopyOnly
+                                    if self.config.reverse_label {
+                                        ExitAction::Paste
+                                    } else {
+                                        ExitAction::CopyOnly
+                                    }
                                 };
                                 let text = trim_wrapping_token(
                                     &match_item.text,
