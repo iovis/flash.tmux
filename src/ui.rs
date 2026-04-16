@@ -10,16 +10,16 @@ use crate::config::Config;
 use crate::search::{SearchInterface, SearchMatch, delete_prev_word, trim_wrapping_token};
 use crate::tmux::{ExitAction, write_result_buffer};
 
-pub struct InteractiveUI {
+pub struct InteractiveUI<'a> {
     pane_id: String,
     config: Config,
-    search: SearchInterface,
+    search: SearchInterface<'a>,
     search_query: String,
     cursor_pos: usize,
 }
 
-impl InteractiveUI {
-    pub fn new(pane_id: String, pane_content: &str, config: Config) -> Self {
+impl<'a> InteractiveUI<'a> {
+    pub fn new(pane_id: String, pane_content: &'a str, config: Config) -> Self {
         let label_chars = config.label_characters.clone();
         let search = SearchInterface::new(pane_content, label_chars);
 
@@ -91,7 +91,7 @@ impl InteractiveUI {
                             let max_lines = Self::visible_line_limit();
                             if let Some(first) = self.search.first_visible_match(max_lines) {
                                 let text = trim_wrapping_token(
-                                    &first.text,
+                                    first.text,
                                     first.match_start,
                                     first.match_end,
                                     &self.config.trimmable_chars,
@@ -117,7 +117,7 @@ impl InteractiveUI {
                                     ExitAction::CopyOnly
                                 };
                                 let text = trim_wrapping_token(
-                                    &match_item.text,
+                                    match_item.text,
                                     match_item.match_start,
                                     match_item.match_end,
                                     &self.config.trimmable_chars,
@@ -298,7 +298,7 @@ fn base_text(text: &str, config: &Config) -> String {
 
 fn render_line_with_matches(
     line: &str,
-    matches: &[&SearchMatch],
+    matches: &[&SearchMatch<'_>],
     config: &Config,
     current_match: Option<(usize, usize, usize)>,
 ) -> String {
@@ -463,15 +463,15 @@ mod tests {
     }
 
     fn make_match(
-        text: &str,
+        text: &'static str,
         line: usize,
         col: usize,
         match_start: usize,
         match_end: usize,
         lbl: Option<char>,
-    ) -> SearchMatch {
+    ) -> SearchMatch<'static> {
         SearchMatch {
-            text: text.to_string(),
+            text,
             line,
             col,
             label: lbl,
