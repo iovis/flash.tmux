@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use crossterm::cursor::MoveTo;
+use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType};
-use crossterm::{QueueableCommand, execute};
+use crossterm::{QueueableCommand, SynchronizedUpdate, execute};
 use std::io::{self, IsTerminal, Write};
 use unicode_width::UnicodeWidthStr;
 
@@ -61,11 +61,9 @@ impl<'a> InteractiveUI<'a> {
                             self.cursor_pos = self.cursor_pos.saturating_sub(1);
                             self.display_content()?;
                         }
-                        (KeyCode::Right, _) => {
-                            if self.cursor_pos < self.search_query.len() {
-                                self.cursor_pos += 1;
-                                self.display_content()?;
-                            }
+                        (KeyCode::Right, _) if self.cursor_pos < self.search_query.len() => {
+                            self.cursor_pos += 1;
+                            self.display_content()?;
                         }
                         (KeyCode::Char('u'), true) => {
                             self.cursor_pos = 0;
@@ -79,13 +77,11 @@ impl<'a> InteractiveUI<'a> {
                             self.cursor_pos = new_cursor;
                             self.update_search(new_query)?;
                         }
-                        (KeyCode::Backspace, _) => {
-                            if self.cursor_pos > 0 {
-                                let mut new_query = self.search_query.clone();
-                                new_query.remove(self.cursor_pos - 1);
-                                self.cursor_pos = self.cursor_pos.saturating_sub(1);
-                                self.update_search(new_query)?;
-                            }
+                        (KeyCode::Backspace, _) if self.cursor_pos > 0 => {
+                            let mut new_query = self.search_query.clone();
+                            new_query.remove(self.cursor_pos - 1);
+                            self.cursor_pos = self.cursor_pos.saturating_sub(1);
+                            self.update_search(new_query)?;
                         }
                         (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab, false) => {
                             let max_lines = Self::visible_line_limit();
@@ -150,25 +146,29 @@ impl<'a> InteractiveUI<'a> {
 
     fn display_content(&self) -> Result<()> {
         let mut out = io::stderr();
-        execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
-
         let available_height = Self::visible_line_limit();
         let height = available_height.saturating_add(1);
 
-        out.queue(MoveTo(0, 0))?;
+        out.sync_update(|out| -> io::Result<()> {
+            out.queue(Hide)?;
+            out.queue(MoveTo(0, 0))?;
+            out.queue(Clear(ClearType::FromCursorDown))?;
 
-        self.display_pane_content(&mut out, available_height)?;
+            self.display_pane_content(out, available_height)
+                .map_err(io::Error::other)?;
 
-        let prompt = self.build_search_bar_output();
-        let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
-        out.queue(MoveTo(0, prompt_row))?;
-        out.write_all(prompt.as_bytes())?;
+            let prompt = self.build_search_bar_output();
+            let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
+            out.queue(MoveTo(0, prompt_row))?;
+            out.write_all(prompt.as_bytes())?;
 
-        let cursor_col =
-            u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX);
-        out.queue(MoveTo(cursor_col, prompt_row))?;
+            let cursor_col =
+                u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX);
+            out.queue(MoveTo(cursor_col, prompt_row))?;
+            out.queue(Show)?;
 
-        out.flush()?;
+            Ok(())
+        })??;
         Ok(())
     }
 
@@ -271,7 +271,7 @@ impl Drop for TerminalModeGuard {
             let _ = terminal::disable_raw_mode();
         }
         let mut out = io::stderr();
-        let _ = execute!(out, Clear(ClearType::All), MoveTo(0, 0));
+        let _ = execute!(out, Show, Clear(ClearType::All), MoveTo(0, 0));
     }
 }
 
