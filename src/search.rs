@@ -329,6 +329,37 @@ mod tests {
     }
 
     #[test]
+    fn search_splits_on_ascii_whitespace() {
+        let mut search = SearchInterface::new("alpha\tbeta gamma", default_labels());
+        let matches = search.search("be");
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text, "beta");
+        assert_eq!(matches[0].col, 6);
+    }
+
+    #[test]
+    fn search_does_not_split_on_non_ascii_whitespace() {
+        let mut search = SearchInterface::new("alpha\u{00a0}beta", default_labels());
+        let matches = search.search("be");
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text, "alpha\u{00a0}beta");
+        assert_eq!(matches[0].col, 0);
+        assert_eq!(matches[0].match_start, "alpha\u{00a0}".len());
+    }
+
+    #[test]
+    fn search_case_folding_is_ascii_only() {
+        let mut search = SearchInterface::new("Ärger ärger", default_labels());
+
+        assert!(search.search("är").len() == 1);
+        assert!(search.search("ÄR").len() == 1);
+        assert!(search.search("är").iter().all(|m| m.text == "ärger"));
+        assert!(search.search("ÄR").iter().all(|m| m.text == "Ärger"));
+    }
+
+    #[test]
     fn search_ordering_is_reverse() {
         let mut search = SearchInterface::new("abc abc", default_labels());
         let matches = search.search("a");
