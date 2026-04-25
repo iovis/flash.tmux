@@ -14,6 +14,7 @@ pub struct SearchInterface<'a> {
     matches: Vec<SearchMatch<'a>>,
     line_match_ranges: Vec<(usize, usize)>,
     label_chars: String,
+    last_query: String,
 }
 
 impl<'a> SearchInterface<'a> {
@@ -25,13 +26,15 @@ impl<'a> SearchInterface<'a> {
             matches: Vec::new(),
             line_match_ranges,
             label_chars,
+            last_query: String::new(),
         }
     }
 
     pub fn search(&mut self, query: &str) -> &[SearchMatch<'a>] {
-        self.matches.clear();
         if query.is_empty() {
+            self.matches.clear();
             self.clear_line_match_ranges();
+            self.last_query.clear();
             return &self.matches;
         }
 
@@ -39,6 +42,65 @@ impl<'a> SearchInterface<'a> {
         let query_bytes = query_cmp.as_bytes();
         let query_len = query_bytes.len();
 
+        if !self.last_query.is_empty() && query_cmp.starts_with(&self.last_query) {
+            self.refine_matches(query_bytes, self.last_query.len());
+        } else {
+            self.matches.clear();
+            self.scan_matches(query_bytes, query_len);
+            self.matches.sort_unstable_by(|left, right| {
+                right
+                    .line
+                    .cmp(&left.line)
+                    .then_with(|| right.col.cmp(&left.col))
+                    .then_with(|| right.match_start.cmp(&left.match_start))
+            });
+        }
+
+        assign_labels(&mut self.matches, query_bytes, &self.label_chars);
+        self.rebuild_line_match_ranges();
+        self.last_query = query_cmp;
+
+        &self.matches
+    }
+
+    pub fn get_match_by_label(&self, label: char) -> Option<&SearchMatch<'a>> {
+        self.matches.iter().find(|m| m.label == Some(label))
+    }
+
+    pub fn first_visible_match(&self, max_lines: usize) -> Option<&SearchMatch<'a>> {
+        self.matches.iter().find(|m| m.line < max_lines)
+    }
+
+    pub fn get_matches_at_line(&self, line_num: usize) -> &[SearchMatch<'a>] {
+        let Some((start, end)) = self.line_match_ranges.get(line_num).copied() else {
+            return &[];
+        };
+        &self.matches[start..end]
+    }
+
+    fn clear_line_match_ranges(&mut self) {
+        self.line_match_ranges.fill((0, 0));
+    }
+
+    fn rebuild_line_match_ranges(&mut self) {
+        self.clear_line_match_ranges();
+
+        let mut start = 0usize;
+        while start < self.matches.len() {
+            let line = self.matches[start].line;
+            let mut end = start + 1;
+            while end < self.matches.len() && self.matches[end].line == line {
+                end += 1;
+            }
+
+            if let Some(range) = self.line_match_ranges.get_mut(line) {
+                *range = (start, end);
+            }
+            start = end;
+        }
+    }
+
+    fn scan_matches(&mut self, query_bytes: &[u8], query_len: usize) {
         for (line_idx, line) in self.lines.iter().copied().enumerate() {
             let line_bytes = line.as_bytes();
             let mut idx = 0usize;
@@ -84,54 +146,24 @@ impl<'a> SearchInterface<'a> {
                 }
             }
         }
+    }
 
-        self.matches.sort_unstable_by(|left, right| {
-            right
-                .line
-                .cmp(&left.line)
-                .then_with(|| right.col.cmp(&left.col))
-                .then_with(|| right.match_start.cmp(&left.match_start))
+    fn refine_matches(&mut self, query_bytes: &[u8], previous_query_len: usize) {
+        self.matches.retain(|candidate| {
+            let token_bytes = candidate.text.as_bytes();
+            let extended_end = candidate.match_start + query_bytes.len();
+            if extended_end > token_bytes.len() || !is_utf8_boundary(token_bytes, extended_end) {
+                return false;
+            }
+
+            token_bytes[candidate.match_start + previous_query_len..extended_end]
+                .iter()
+                .zip(&query_bytes[previous_query_len..])
+                .all(|(token_byte, query_byte)| token_byte.eq_ignore_ascii_case(query_byte))
         });
-        assign_labels(&mut self.matches, query, &self.label_chars);
-        self.rebuild_line_match_ranges();
 
-        &self.matches
-    }
-
-    pub fn get_match_by_label(&self, label: char) -> Option<&SearchMatch<'a>> {
-        self.matches.iter().find(|m| m.label == Some(label))
-    }
-
-    pub fn first_visible_match(&self, max_lines: usize) -> Option<&SearchMatch<'a>> {
-        self.matches.iter().find(|m| m.line < max_lines)
-    }
-
-    pub fn get_matches_at_line(&self, line_num: usize) -> &[SearchMatch<'a>] {
-        let Some((start, end)) = self.line_match_ranges.get(line_num).copied() else {
-            return &[];
-        };
-        &self.matches[start..end]
-    }
-
-    fn clear_line_match_ranges(&mut self) {
-        self.line_match_ranges.fill((0, 0));
-    }
-
-    fn rebuild_line_match_ranges(&mut self) {
-        self.clear_line_match_ranges();
-
-        let mut start = 0usize;
-        while start < self.matches.len() {
-            let line = self.matches[start].line;
-            let mut end = start + 1;
-            while end < self.matches.len() && self.matches[end].line == line {
-                end += 1;
-            }
-
-            if let Some(range) = self.line_match_ranges.get_mut(line) {
-                *range = (start, end);
-            }
-            start = end;
+        for candidate in &mut self.matches {
+            candidate.match_end = candidate.match_start + query_bytes.len();
         }
     }
 }
@@ -229,13 +261,13 @@ fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
         .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
-fn assign_labels(matches: &mut [SearchMatch<'_>], query: &str, label_chars: &str) {
+fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &str) {
     let mut query_chars = [false; 256];
     let mut continuation_chars = [false; 256];
     let mut used_labels = [false; 256];
 
-    for byte in query.bytes() {
-        query_chars[usize::from(byte.to_ascii_lowercase())] = true;
+    for byte in query {
+        query_chars[usize::from(*byte)] = true;
     }
 
     for m in matches.iter() {
@@ -337,6 +369,55 @@ mod tests {
         assert_eq!(line_1.len(), 1);
         assert!(line_1.iter().all(|m| m.line == 1));
         assert!(line_2.is_empty());
+    }
+
+    #[test]
+    fn search_refines_when_query_extends_previous_query() {
+        let pane = "alpha alphabet alphanumeric\nbeta alpha";
+        let mut refined = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        refined.search("al");
+        let refined_matches = refined.search("alp");
+        let fresh_matches = fresh.search("alp");
+
+        assert_eq!(refined_matches.len(), fresh_matches.len());
+        for (left, right) in refined_matches.iter().zip(fresh_matches.iter()) {
+            assert_eq!(left.text, right.text);
+            assert_eq!(left.line, right.line);
+            assert_eq!(left.col, right.col);
+            assert_eq!(left.match_start, right.match_start);
+            assert_eq!(left.match_end, right.match_end);
+            assert_eq!(left.label, right.label);
+        }
+    }
+
+    #[test]
+    fn search_refinement_from_empty_match_set_stays_empty() {
+        let mut search = SearchInterface::new("alpha beta", default_labels());
+        assert!(search.search("zzz").is_empty());
+        assert!(search.search("zzzz").is_empty());
+    }
+
+    #[test]
+    fn search_falls_back_to_full_rescan_for_non_prefix_query() {
+        let pane = "alpha beta gamma";
+        let mut refined = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        refined.search("al");
+        let refined_matches = refined.search("be");
+        let fresh_matches = fresh.search("be");
+
+        assert_eq!(refined_matches.len(), fresh_matches.len());
+        for (left, right) in refined_matches.iter().zip(fresh_matches.iter()) {
+            assert_eq!(left.text, right.text);
+            assert_eq!(left.line, right.line);
+            assert_eq!(left.col, right.col);
+            assert_eq!(left.match_start, right.match_start);
+            assert_eq!(left.match_end, right.match_end);
+            assert_eq!(left.label, right.label);
+        }
     }
 
     #[test]
