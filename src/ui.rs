@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType};
@@ -33,7 +33,7 @@ impl<'a> InteractiveUI<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn run(&mut self) -> Result<()> {
+    pub fn run(&mut self) -> Result<ExitAction> {
         let _term_guard = TerminalModeGuard::new()?;
 
         self.display_content()?;
@@ -46,8 +46,7 @@ impl<'a> InteractiveUI<'a> {
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                     match (key.code, ctrl) {
                         (KeyCode::Char('c' | 'd'), true) | (KeyCode::Esc, _) => {
-                            self.save_result("", ExitAction::Cancel)?;
-                            return Ok(());
+                            return self.save_result("", ExitAction::Cancel);
                         }
                         (KeyCode::Char('a'), true) | (KeyCode::Home, _) => {
                             self.cursor_pos = 0;
@@ -97,8 +96,7 @@ impl<'a> InteractiveUI<'a> {
                                     KeyCode::Char(' ') => ExitAction::PasteAndSpace,
                                     _ => ExitAction::Paste,
                                 };
-                                self.save_result(text, action)?;
-                                return Ok(());
+                                return self.save_result(text, action);
                             }
                         }
                         (KeyCode::Char(c), false) => {
@@ -118,8 +116,7 @@ impl<'a> InteractiveUI<'a> {
                                     match_item.match_end,
                                     &self.config.trimmable_chars,
                                 );
-                                self.save_result(text, action)?;
-                                return Ok(());
+                                return self.save_result(text, action);
                             }
 
                             if c.is_ascii_graphic() || c == ' ' {
@@ -188,14 +185,14 @@ impl<'a> InteractiveUI<'a> {
 
     fn display_pane_content(&self, out: &mut io::Stderr, available_height: usize) -> Result<()> {
         let total_lines = self.search.lines.len().min(available_height);
+        let first_visible = self
+            .search
+            .first_visible_match(total_lines)
+            .map(|m| (m.line, m.col, m.match_start, m.match_end));
 
         for (line_idx, line) in self.search.lines.iter().take(available_height).enumerate() {
             let matches = self.search.get_matches_at_line(line_idx);
-            let current_match = self
-                .search
-                .first_visible_match(total_lines)
-                .filter(|m| m.line == line_idx)
-                .map(|m| (m.line, m.col, m.match_start, m.match_end));
+            let current_match = first_visible.filter(|m| m.0 == line_idx);
             let is_last_line = line_idx + 1 == total_lines;
 
             let output = render_line_with_matches(line, matches, &self.config, current_match);
@@ -239,10 +236,13 @@ impl<'a> InteractiveUI<'a> {
         base
     }
 
-    fn save_result(&self, text: &str, action: ExitAction) -> Result<()> {
+    fn save_result(&self, text: &str, action: ExitAction) -> Result<ExitAction> {
         let pane_id = &self.pane_id;
-        let _ = write_result_buffer(pane_id, text);
-        std::process::exit(action.exit_code());
+        let wrote_result = write_result_buffer(pane_id, text);
+        if !text.is_empty() && !wrote_result {
+            bail!("failed to write selected text to tmux result buffer");
+        }
+        Ok(action)
     }
 }
 
