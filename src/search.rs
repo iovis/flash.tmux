@@ -12,15 +12,18 @@ pub struct SearchMatch<'a> {
 pub struct SearchInterface<'a> {
     pub lines: Vec<&'a str>,
     matches: Vec<SearchMatch<'a>>,
+    line_match_ranges: Vec<(usize, usize)>,
     label_chars: String,
 }
 
 impl<'a> SearchInterface<'a> {
     pub fn new(pane_content: &'a str, label_chars: String) -> Self {
-        let lines = pane_content.split('\n').collect();
+        let lines: Vec<&str> = pane_content.split('\n').collect();
+        let line_match_ranges = vec![(0, 0); lines.len()];
         Self {
             lines,
             matches: Vec::new(),
+            line_match_ranges,
             label_chars,
         }
     }
@@ -28,6 +31,7 @@ impl<'a> SearchInterface<'a> {
     pub fn search(&mut self, query: &str) -> &[SearchMatch<'a>] {
         self.matches.clear();
         if query.is_empty() {
+            self.clear_line_match_ranges();
             return &self.matches;
         }
 
@@ -36,48 +40,47 @@ impl<'a> SearchInterface<'a> {
         let query_len = query_bytes.len();
 
         for (line_idx, line) in self.lines.iter().copied().enumerate() {
-            let mut token_start = 0usize;
-            let mut in_token = false;
+            let line_bytes = line.as_bytes();
+            let mut idx = 0usize;
 
-            for (idx, ch) in line
-                .char_indices()
-                .chain(std::iter::once((line.len(), '\n')))
-            {
-                let in_current_token = idx < line.len() && !ch.is_whitespace();
-
-                if in_current_token && !in_token {
-                    token_start = idx;
-                    in_token = true;
+            while idx < line_bytes.len() {
+                while idx < line_bytes.len() && is_ascii_whitespace(line_bytes[idx]) {
+                    idx += 1;
+                }
+                if idx >= line_bytes.len() {
+                    break;
                 }
 
-                if !in_current_token && in_token {
-                    let token = &line[token_start..idx];
-                    let token_bytes = token.as_bytes();
-                    if query_len <= token_bytes.len() {
-                        for match_pos in 0..=token_bytes.len() - query_len {
-                            if !token.is_char_boundary(match_pos)
-                                || !token.is_char_boundary(match_pos + query_len)
-                                || !ascii_case_insensitive_eq(
-                                    &token_bytes[match_pos..match_pos + query_len],
-                                    query_bytes,
-                                )
-                            {
-                                continue;
-                            }
+                let token_start = idx;
+                while idx < line_bytes.len() && !is_ascii_whitespace(line_bytes[idx]) {
+                    idx += 1;
+                }
 
-                            let candidate = SearchMatch {
-                                text: token,
-                                line: line_idx,
-                                col: token_start,
-                                label: None,
-                                match_start: match_pos,
-                                match_end: match_pos + query_len,
-                            };
-                            self.matches.push(candidate);
+                let token_end = idx;
+                let token = &line[token_start..token_end];
+                let token_bytes = token.as_bytes();
+                if query_len <= token_bytes.len() {
+                    for match_pos in 0..=token_bytes.len() - query_len {
+                        if !is_utf8_boundary(token_bytes, match_pos)
+                            || !is_utf8_boundary(token_bytes, match_pos + query_len)
+                            || !ascii_case_insensitive_eq(
+                                &token_bytes[match_pos..match_pos + query_len],
+                                query_bytes,
+                            )
+                        {
+                            continue;
                         }
-                    }
 
-                    in_token = false;
+                        let candidate = SearchMatch {
+                            text: token,
+                            line: line_idx,
+                            col: token_start,
+                            label: None,
+                            match_start: match_pos,
+                            match_end: match_pos + query_len,
+                        };
+                        self.matches.push(candidate);
+                    }
                 }
             }
         }
@@ -90,6 +93,7 @@ impl<'a> SearchInterface<'a> {
                 .then_with(|| right.match_start.cmp(&left.match_start))
         });
         assign_labels(&mut self.matches, query, &self.label_chars);
+        self.rebuild_line_match_ranges();
 
         &self.matches
     }
@@ -102,8 +106,33 @@ impl<'a> SearchInterface<'a> {
         self.matches.iter().find(|m| m.line < max_lines)
     }
 
-    pub fn get_matches_at_line(&self, line_num: usize) -> Vec<&SearchMatch<'a>> {
-        self.matches.iter().filter(|m| m.line == line_num).collect()
+    pub fn get_matches_at_line(&self, line_num: usize) -> &[SearchMatch<'a>] {
+        let Some((start, end)) = self.line_match_ranges.get(line_num).copied() else {
+            return &[];
+        };
+        &self.matches[start..end]
+    }
+
+    fn clear_line_match_ranges(&mut self) {
+        self.line_match_ranges.fill((0, 0));
+    }
+
+    fn rebuild_line_match_ranges(&mut self) {
+        self.clear_line_match_ranges();
+
+        let mut start = 0usize;
+        while start < self.matches.len() {
+            let line = self.matches[start].line;
+            let mut end = start + 1;
+            while end < self.matches.len() && self.matches[end].line == line {
+                end += 1;
+            }
+
+            if let Some(range) = self.line_match_ranges.get_mut(line) {
+                *range = (start, end);
+            }
+            start = end;
+        }
     }
 }
 
@@ -181,6 +210,14 @@ fn is_ascii_delimiter(ch: char, delimiters: &[bool; 256]) -> bool {
 
 fn is_leading_trimmable(ch: char, trimmable_chars: &str) -> bool {
     ch != '.' && trimmable_chars.contains(ch)
+}
+
+fn is_ascii_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x0b)
+}
+
+fn is_utf8_boundary(text: &[u8], idx: usize) -> bool {
+    idx == 0 || idx >= text.len() || (text[idx] & 0b1100_0000) != 0b1000_0000
 }
 
 fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
@@ -284,6 +321,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn get_matches_at_line_returns_borrowed_slice() {
+        let mut search = SearchInterface::new("alpha beta\ngamma alpha", default_labels());
+        search.search("al");
+
+        let line_0 = search.get_matches_at_line(0);
+        let line_1 = search.get_matches_at_line(1);
+        let line_2 = search.get_matches_at_line(2);
+
+        assert_eq!(line_0.len(), 1);
+        assert!(line_0.iter().all(|m| m.line == 0));
+        assert_eq!(line_1.len(), 1);
+        assert!(line_1.iter().all(|m| m.line == 1));
+        assert!(line_2.is_empty());
     }
 
     #[test]

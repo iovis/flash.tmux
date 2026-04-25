@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use crossterm::cursor::MoveTo;
+use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType};
-use crossterm::{QueueableCommand, execute};
+use crossterm::{QueueableCommand, SynchronizedUpdate, execute};
 use std::io::{self, IsTerminal, Write};
 use unicode_width::UnicodeWidthStr;
 
@@ -61,11 +61,9 @@ impl<'a> InteractiveUI<'a> {
                             self.cursor_pos = self.cursor_pos.saturating_sub(1);
                             self.display_content()?;
                         }
-                        (KeyCode::Right, _) => {
-                            if self.cursor_pos < self.search_query.len() {
-                                self.cursor_pos += 1;
-                                self.display_content()?;
-                            }
+                        (KeyCode::Right, _) if self.cursor_pos < self.search_query.len() => {
+                            self.cursor_pos += 1;
+                            self.display_content()?;
                         }
                         (KeyCode::Char('u'), true) => {
                             self.cursor_pos = 0;
@@ -79,13 +77,11 @@ impl<'a> InteractiveUI<'a> {
                             self.cursor_pos = new_cursor;
                             self.update_search(new_query)?;
                         }
-                        (KeyCode::Backspace, _) => {
-                            if self.cursor_pos > 0 {
-                                let mut new_query = self.search_query.clone();
-                                new_query.remove(self.cursor_pos - 1);
-                                self.cursor_pos = self.cursor_pos.saturating_sub(1);
-                                self.update_search(new_query)?;
-                            }
+                        (KeyCode::Backspace, _) if self.cursor_pos > 0 => {
+                            let mut new_query = self.search_query.clone();
+                            new_query.remove(self.cursor_pos - 1);
+                            self.cursor_pos = self.cursor_pos.saturating_sub(1);
+                            self.update_search(new_query)?;
                         }
                         (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab, false) => {
                             let max_lines = Self::visible_line_limit();
@@ -158,25 +154,29 @@ impl<'a> InteractiveUI<'a> {
 
     fn display_content(&self) -> Result<()> {
         let mut out = io::stderr();
-        execute!(out, Clear(ClearType::All), MoveTo(0, 0))?;
-
         let available_height = Self::visible_line_limit();
         let height = available_height.saturating_add(1);
 
-        out.queue(MoveTo(0, 0))?;
+        out.sync_update(|out| -> io::Result<()> {
+            out.queue(Hide)?;
+            out.queue(MoveTo(0, 0))?;
+            out.queue(Clear(ClearType::FromCursorDown))?;
 
-        self.display_pane_content(&mut out, available_height)?;
+            self.display_pane_content(out, available_height)
+                .map_err(io::Error::other)?;
 
-        let prompt = self.build_search_bar_output();
-        let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
-        out.queue(MoveTo(0, prompt_row))?;
-        out.write_all(prompt.as_bytes())?;
+            let prompt = self.build_search_bar_output();
+            let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
+            out.queue(MoveTo(0, prompt_row))?;
+            out.write_all(prompt.as_bytes())?;
 
-        let cursor_col =
-            u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX);
-        out.queue(MoveTo(cursor_col, prompt_row))?;
+            let cursor_col =
+                u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX);
+            out.queue(MoveTo(cursor_col, prompt_row))?;
+            out.queue(Show)?;
 
-        out.flush()?;
+            Ok(())
+        })??;
         Ok(())
     }
 
@@ -203,10 +203,10 @@ impl<'a> InteractiveUI<'a> {
                 .search
                 .first_visible_match(total_lines)
                 .filter(|m| m.line == line_idx)
-                .map(|m| (m.col, m.match_start, m.match_end));
+                .map(|m| (m.line, m.col, m.match_start, m.match_end));
             let is_last_line = line_idx + 1 == total_lines;
 
-            let output = render_line_with_matches(line, &matches, &self.config, current_match);
+            let output = render_line_with_matches(line, matches, &self.config, current_match);
 
             if is_last_line {
                 out.write_all(output.as_bytes())?;
@@ -279,7 +279,7 @@ impl Drop for TerminalModeGuard {
             let _ = terminal::disable_raw_mode();
         }
         let mut out = io::stderr();
-        let _ = execute!(out, Clear(ClearType::All), MoveTo(0, 0));
+        let _ = execute!(out, Show, Clear(ClearType::All), MoveTo(0, 0));
     }
 }
 
@@ -306,9 +306,9 @@ fn base_text(text: &str, config: &Config) -> String {
 
 fn render_line_with_matches(
     line: &str,
-    matches: &[&SearchMatch<'_>],
+    matches: &[SearchMatch<'_>],
     config: &Config,
-    current_match: Option<(usize, usize, usize)>,
+    current_match: Option<(usize, usize, usize, usize)>,
 ) -> String {
     if line.is_empty() {
         return format!(
@@ -333,7 +333,7 @@ fn render_line_with_matches(
 
     let mut style_map = vec![StyleKind::Base; line.len()];
     for m in matches {
-        let style_kind = if current_match == Some((m.col, m.match_start, m.match_end)) {
+        let style_kind = if current_match == Some((m.line, m.col, m.match_start, m.match_end)) {
             StyleKind::Current
         } else {
             StyleKind::Highlight
@@ -512,7 +512,7 @@ mod tests {
         let c = cfg();
         // line: "foo bar", match on "foo" (col=0, match_start=0, match_end=3), no label
         let m = make_match("foo", 0, 0, 0, 3, None);
-        let matches = vec![&m];
+        let matches = [m];
         let result = render_line_with_matches("foo bar", &matches, &c, None);
 
         let expected = format!(
@@ -530,8 +530,8 @@ mod tests {
         let c = cfg();
         // "foo bar", match on "foo", marked as current
         let m = make_match("foo", 0, 0, 0, 3, None);
-        let matches = vec![&m];
-        let current = Some((0, 0, 3));
+        let matches = [m];
+        let current = Some((0, 0, 0, 3));
         let result = render_line_with_matches("foo bar", &matches, &c, current);
 
         let expected = format!(
@@ -551,7 +551,7 @@ mod tests {
         let c = cfg();
         // "foo bar", match "foo" with label 'a'. Label appears at byte 3 (right after "foo").
         let m = make_match("foo", 0, 0, 0, 3, Some('a'));
-        let matches = vec![&m];
+        let matches = [m];
         let result = render_line_with_matches("foo bar", &matches, &c, None);
 
         // "foo" highlighted, then label 'a' replaces the space, then "bar" as base
@@ -571,7 +571,7 @@ mod tests {
         let c = cfg();
         // "foo", match "foo" (entire token), label 'a'. Label at position 3 == line.len().
         let m = make_match("foo", 0, 0, 0, 3, Some('a'));
-        let matches = vec![&m];
+        let matches = [m];
         let result = render_line_with_matches("foo", &matches, &c, None);
 
         let expected = format!(
@@ -591,7 +591,7 @@ mod tests {
         let c = cfg();
         // "hello world end", match on "world" at col=6, match_start=0, match_end=5
         let m = make_match("world", 0, 6, 0, 5, None);
-        let matches = vec![&m];
+        let matches = [m];
         let result = render_line_with_matches("hello world end", &matches, &c, None);
 
         let expected = format!(
@@ -613,7 +613,7 @@ mod tests {
         // "foo bar foo", two "foo" tokens: col=0 and col=8
         let m1 = make_match("foo", 0, 0, 0, 3, Some('a'));
         let m2 = make_match("foo", 0, 8, 0, 3, Some('s'));
-        let matches = vec![&m1, &m2];
+        let matches = [m1, m2];
         let result = render_line_with_matches("foo bar foo", &matches, &c, None);
 
         let expected = format!(
@@ -635,8 +635,8 @@ mod tests {
         // "foo bar foo", first match is current, second is highlight
         let m1 = make_match("foo", 0, 0, 0, 3, Some('a'));
         let m2 = make_match("foo", 0, 8, 0, 3, Some('s'));
-        let matches = vec![&m1, &m2];
-        let current = Some((0, 0, 3)); // m1 is current
+        let matches = [m1, m2];
+        let current = Some((0, 0, 0, 3)); // m1 is current
         let result = render_line_with_matches("foo bar foo", &matches, &c, current);
 
         let expected = format!(
@@ -659,7 +659,7 @@ mod tests {
         let c = cfg();
         // match on "bar" with no label assigned
         let m = make_match("bar", 0, 4, 0, 3, None);
-        let matches = vec![&m];
+        let matches = [m];
         let result = render_line_with_matches("foo bar baz", &matches, &c, None);
 
         let expected = format!(
@@ -680,7 +680,7 @@ mod tests {
         let c = cfg();
         // "foobar", match on "oo" within "foobar" (col=0, match_start=1, match_end=3)
         let m = make_match("foobar", 0, 0, 1, 3, Some('a'));
-        let matches = vec![&m];
+        let matches = [m];
         let result = render_line_with_matches("foobar", &matches, &c, None);
 
         // "f" base, "oo" highlighted, label 'a' replaces 'b', "ar" base
@@ -708,8 +708,8 @@ mod tests {
         // Bytes 0 = highlight, bytes 1-2 = current (higher priority)
         let m1 = make_match("abcabc", 0, 0, 0, 3, None);
         let m2 = make_match("abcabc", 0, 0, 1, 3, None);
-        let matches = vec![&m1, &m2];
-        let current = Some((0, 1, 3)); // m2 is current
+        let matches = [m1, m2];
+        let current = Some((0, 0, 1, 3)); // m2 is current
         let result = render_line_with_matches("abcabc", &matches, &c, current);
 
         let expected = format!(
@@ -732,7 +732,7 @@ mod tests {
         // Both end at col+match_end = 3. Only one label should appear.
         let m1 = make_match("foo", 0, 0, 0, 3, Some('a'));
         let m2 = make_match("foo", 0, 0, 0, 3, Some('s'));
-        let matches = vec![&m1, &m2];
+        let matches = [m1, m2];
         let result = render_line_with_matches("foo bar", &matches, &c, None);
 
         // Both matches highlight "foo", but only one label at position 3.
@@ -743,6 +743,23 @@ mod tests {
             highlight("foo", &c),
             label('a', &c),
             "bar",
+            c.style_sequences.reset,
+        );
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn same_position_different_line_not_marked_current() {
+        let c = cfg();
+        let m = make_match("foo", 1, 0, 0, 3, None);
+        let matches = [m];
+        let current = Some((0, 0, 0, 3));
+        let result = render_line_with_matches("foo", &matches, &c, current);
+
+        let expected = format!(
+            "{}{}{}",
+            c.style_sequences.base,
+            highlight("foo", &c),
             c.style_sequences.reset,
         );
         assert_eq!(result, expected);

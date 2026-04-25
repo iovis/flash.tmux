@@ -167,8 +167,7 @@ pub fn is_in_copy_mode(pane_id: &str) -> bool {
         &["display-message", "-t", pane_id, "-p", "#{pane_mode}"],
         TrimMode::Trim,
     )
-    .map(|mode| mode == "copy-mode")
-    .unwrap_or(false)
+    .is_ok_and(|mode| mode == "copy-mode")
 }
 
 pub fn exit_copy_mode(pane_id: &str) {
@@ -197,8 +196,7 @@ fn tmux_run_quiet(args: &[&str]) -> bool {
     Command::new("tmux")
         .args(args)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 pub struct Clipboard;
