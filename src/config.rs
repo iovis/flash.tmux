@@ -12,6 +12,7 @@ pub struct Config {
     pub prompt_indicator: String,
     pub label_characters: String,
     pub trimmable_chars: String,
+    pub reverse_label: bool,
     pub highlight_style: StyleSpec,
     pub current_style: StyleSpec,
     pub label_style: StyleSpec,
@@ -27,6 +28,7 @@ impl Config {
             prompt_indicator: "❯".to_string(),
             label_characters: "jklhgfdsauiopytrewqnmvbcxz".to_string(),
             trimmable_chars: "()[]{}\"'`,.:;".to_string(),
+            reverse_label: false,
             highlight_style: StyleSpec::new(Some(Color::Rgb {
                 r: 186,
                 g: 187,

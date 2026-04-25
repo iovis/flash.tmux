@@ -13,9 +13,12 @@ struct Cli {
     interactive: bool,
     #[arg(long)]
     pane_id: Option<String>,
+    /// Reverse label behavior: lowercase=copy only, uppercase=copy+paste
+    #[arg(short = 'r', long)]
+    reverse_label: bool,
 }
 
-fn run_parent() -> Result<()> {
+fn run_parent(cli: &Cli) -> Result<()> {
     let pane_id = tmux::get_tmux_pane_id()?;
     let in_copy_mode = tmux::is_in_copy_mode(&pane_id);
     let pane_content = tmux::capture_pane(&pane_id, in_copy_mode)?;
@@ -53,6 +56,14 @@ fn run_parent() -> Result<()> {
         pane_id.clone(),
     ];
 
+    let args = if cli.reverse_label {
+        let mut mut_args = args;
+        mut_args.push("-r".to_string());
+        mut_args
+    } else {
+        args
+    };
+
     let status = Command::new("tmux").args(&args).status()?;
 
     let result_text = tmux::read_result_buffer(&pane_id)
@@ -84,7 +95,8 @@ fn run_interactive(cli: &Cli) -> Result<tmux::ExitAction> {
         .pane_id
         .clone()
         .context("pane-id is required in interactive mode")?;
-    let config = Config::defaults();
+    let mut config = Config::defaults();
+    config.reverse_label = cli.reverse_label;
 
     let pane_content = tmux::read_pane_content_buffer(&pane_id)
         .ok()
@@ -105,6 +117,6 @@ fn main() -> Result<()> {
         let action = run_interactive(&cli)?;
         std::process::exit(action.exit_code());
     } else {
-        run_parent()
+        run_parent(&cli)
     }
 }
