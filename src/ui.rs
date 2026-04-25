@@ -6,7 +6,7 @@ use crossterm::{QueueableCommand, SynchronizedUpdate, execute};
 use std::io::{self, IsTerminal, Write};
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::Config;
+use crate::config::{Config, LabelActionMode};
 use crate::search::{SearchInterface, SearchMatch, delete_prev_word, trim_wrapping_token};
 use crate::tmux::{ExitAction, write_result_buffer};
 
@@ -105,19 +105,7 @@ impl<'a> InteractiveUI<'a> {
                                 && let Some(match_item) =
                                     self.search.get_match_by_label(label_lookup)
                             {
-                                let action = if c.is_ascii_lowercase() {
-                                    if self.config.reverse_label {
-                                        ExitAction::CopyOnly
-                                    } else {
-                                        ExitAction::Paste
-                                    }
-                                } else {
-                                    if self.config.reverse_label {
-                                        ExitAction::Paste
-                                    } else {
-                                        ExitAction::CopyOnly
-                                    }
-                                };
+                                let action = label_key_action(c, self.config.label_action_mode);
                                 let text = trim_wrapping_token(
                                     match_item.text,
                                     match_item.match_start,
@@ -304,6 +292,19 @@ fn base_text(text: &str, config: &Config) -> String {
     config.base_style.apply(text)
 }
 
+fn label_key_action(key: char, label_action_mode: LabelActionMode) -> ExitAction {
+    let should_paste = match label_action_mode {
+        LabelActionMode::Default => key.is_ascii_lowercase(),
+        LabelActionMode::Reversed => key.is_ascii_uppercase(),
+    };
+
+    if should_paste {
+        ExitAction::Paste
+    } else {
+        ExitAction::CopyOnly
+    }
+}
+
 fn render_line_with_matches(
     line: &str,
     matches: &[SearchMatch<'_>],
@@ -486,6 +487,38 @@ mod tests {
             match_start,
             match_end,
         }
+    }
+
+    #[test]
+    fn lowercase_label_pastes_by_default() {
+        assert!(matches!(
+            label_key_action('a', LabelActionMode::Default),
+            ExitAction::Paste
+        ));
+    }
+
+    #[test]
+    fn uppercase_label_copies_by_default() {
+        assert!(matches!(
+            label_key_action('A', LabelActionMode::Default),
+            ExitAction::CopyOnly
+        ));
+    }
+
+    #[test]
+    fn lowercase_label_copies_when_reversed() {
+        assert!(matches!(
+            label_key_action('a', LabelActionMode::Reversed),
+            ExitAction::CopyOnly
+        ));
+    }
+
+    #[test]
+    fn uppercase_label_pastes_when_reversed() {
+        assert!(matches!(
+            label_key_action('A', LabelActionMode::Reversed),
+            ExitAction::Paste
+        ));
     }
 
     // --- empty / no-match cases ---

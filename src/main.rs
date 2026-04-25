@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use std::process::Command;
 
-use flash_tmux::config::Config;
+use flash_tmux::config::{Config, LabelActionMode};
 use flash_tmux::tmux;
 use flash_tmux::ui::InteractiveUI;
 
@@ -96,7 +96,7 @@ fn run_interactive(cli: &Cli) -> Result<tmux::ExitAction> {
         .clone()
         .context("pane-id is required in interactive mode")?;
     let mut config = Config::defaults();
-    config.reverse_label = cli.reverse_label;
+    config.label_action_mode = cli.label_action_mode();
 
     let pane_content = tmux::read_pane_content_buffer(&pane_id)
         .ok()
@@ -118,5 +118,15 @@ fn main() -> Result<()> {
         std::process::exit(action.exit_code());
     } else {
         run_parent(&cli)
+    }
+}
+
+impl Cli {
+    fn label_action_mode(&self) -> LabelActionMode {
+        if self.reverse_label {
+            LabelActionMode::Reversed
+        } else {
+            LabelActionMode::Default
+        }
     }
 }
