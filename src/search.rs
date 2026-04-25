@@ -36,48 +36,47 @@ impl<'a> SearchInterface<'a> {
         let query_len = query_bytes.len();
 
         for (line_idx, line) in self.lines.iter().copied().enumerate() {
-            let mut token_start = 0usize;
-            let mut in_token = false;
+            let line_bytes = line.as_bytes();
+            let mut idx = 0usize;
 
-            for (idx, ch) in line
-                .char_indices()
-                .chain(std::iter::once((line.len(), '\n')))
-            {
-                let in_current_token = idx < line.len() && !ch.is_whitespace();
-
-                if in_current_token && !in_token {
-                    token_start = idx;
-                    in_token = true;
+            while idx < line_bytes.len() {
+                while idx < line_bytes.len() && is_ascii_whitespace(line_bytes[idx]) {
+                    idx += 1;
+                }
+                if idx >= line_bytes.len() {
+                    break;
                 }
 
-                if !in_current_token && in_token {
-                    let token = &line[token_start..idx];
-                    let token_bytes = token.as_bytes();
-                    if query_len <= token_bytes.len() {
-                        for match_pos in 0..=token_bytes.len() - query_len {
-                            if !token.is_char_boundary(match_pos)
-                                || !token.is_char_boundary(match_pos + query_len)
-                                || !ascii_case_insensitive_eq(
-                                    &token_bytes[match_pos..match_pos + query_len],
-                                    query_bytes,
-                                )
-                            {
-                                continue;
-                            }
+                let token_start = idx;
+                while idx < line_bytes.len() && !is_ascii_whitespace(line_bytes[idx]) {
+                    idx += 1;
+                }
 
-                            let candidate = SearchMatch {
-                                text: token,
-                                line: line_idx,
-                                col: token_start,
-                                label: None,
-                                match_start: match_pos,
-                                match_end: match_pos + query_len,
-                            };
-                            self.matches.push(candidate);
+                let token_end = idx;
+                let token = &line[token_start..token_end];
+                let token_bytes = token.as_bytes();
+                if query_len <= token_bytes.len() {
+                    for match_pos in 0..=token_bytes.len() - query_len {
+                        if !is_utf8_boundary(token_bytes, match_pos)
+                            || !is_utf8_boundary(token_bytes, match_pos + query_len)
+                            || !ascii_case_insensitive_eq(
+                                &token_bytes[match_pos..match_pos + query_len],
+                                query_bytes,
+                            )
+                        {
+                            continue;
                         }
-                    }
 
-                    in_token = false;
+                        let candidate = SearchMatch {
+                            text: token,
+                            line: line_idx,
+                            col: token_start,
+                            label: None,
+                            match_start: match_pos,
+                            match_end: match_pos + query_len,
+                        };
+                        self.matches.push(candidate);
+                    }
                 }
             }
         }
@@ -181,6 +180,14 @@ fn is_ascii_delimiter(ch: char, delimiters: &[bool; 256]) -> bool {
 
 fn is_leading_trimmable(ch: char, trimmable_chars: &str) -> bool {
     ch != '.' && trimmable_chars.contains(ch)
+}
+
+fn is_ascii_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x0b)
+}
+
+fn is_utf8_boundary(text: &[u8], idx: usize) -> bool {
+    idx == 0 || idx >= text.len() || (text[idx] & 0b1100_0000) != 0b1000_0000
 }
 
 fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
