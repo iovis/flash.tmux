@@ -65,29 +65,95 @@ pub struct PaneDimensions {
     pub height: i32,
 }
 
+#[derive(Clone, Debug)]
+pub struct CopyModeLineRange {
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PaneInfo {
+    pub pane_id: String,
+    pub copy_mode_line_range: Option<CopyModeLineRange>,
+    pub dimensions: PaneDimensions,
+}
+
 #[derive(Clone, Copy)]
 enum TrimMode {
-    Trim,
     TrimNewlines,
     None,
 }
 
-pub fn get_tmux_pane_id() -> Result<String> {
-    tmux_output_trim(&["display-message", "-p", "#{pane_id}"], TrimMode::Trim)
-        .context("failed to get pane id")
+pub fn get_current_pane_info() -> Result<PaneInfo> {
+    let out = tmux_output_trim(
+        &[
+            "display-message",
+            "-p",
+            "#{pane_id}\t#{pane_mode}\t#{scroll_position}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{pane_right}\t#{pane_bottom}\t#{pane_width}",
+        ],
+        TrimMode::TrimNewlines,
+    )
+    .context("failed to get current pane info")?;
+
+    parse_current_pane_info(&out).context("failed to parse current pane info")
 }
 
-pub fn capture_pane(pane_id: &str, copy_mode: bool) -> Result<String> {
-    if copy_mode && let Some((start, end)) = copy_mode_line_range(pane_id) {
+fn parse_current_pane_info(out: &str) -> Option<PaneInfo> {
+    let mut fields = out.split('\t');
+    let pane_id = fields.next()?.to_string();
+    let pane_mode = fields.next()?;
+    let scroll = parse_i32_or_default(fields.next()?, 0)?;
+    let height: i32 = fields.next()?.parse().ok()?;
+    let left: i32 = fields.next()?.parse().ok()?;
+    let top: i32 = fields.next()?.parse().ok()?;
+    fields.next()?.parse::<i32>().ok()?;
+    let bottom: i32 = fields.next()?.parse().ok()?;
+    let width: i32 = fields.next()?.parse().ok()?;
+
+    if fields.next().is_some() {
+        return None;
+    }
+
+    let copy_mode_line_range = (pane_mode == "copy-mode").then(|| CopyModeLineRange {
+        start: (-scroll).to_string(),
+        end: (-scroll + height - 1).to_string(),
+    });
+
+    Some(PaneInfo {
+        pane_id,
+        copy_mode_line_range,
+        dimensions: PaneDimensions {
+            left,
+            top,
+            bottom,
+            width,
+            height,
+        },
+    })
+}
+
+fn parse_i32_or_default(value: &str, default: i32) -> Option<i32> {
+    if value.is_empty() {
+        Some(default)
+    } else {
+        value.parse().ok()
+    }
+}
+
+pub fn capture_pane_with_range(
+    pane_id: &str,
+    copy_mode_line_range: Option<&CopyModeLineRange>,
+) -> Result<String> {
+    if let Some(range) = copy_mode_line_range {
         return tmux_output_trim(
             &[
                 "capture-pane",
                 "-p",
                 "-J",
                 "-S",
-                &start,
+                &range.start,
                 "-E",
-                &end,
+                &range.end,
                 "-t",
                 pane_id,
             ],
@@ -100,59 +166,6 @@ pub fn capture_pane(pane_id: &str, copy_mode: bool) -> Result<String> {
         .context("failed to capture pane")
 }
 
-fn copy_mode_line_range(pane_id: &str) -> Option<(String, String)> {
-    let out = tmux_output_trim(
-        &[
-            "display-message",
-            "-t",
-            pane_id,
-            "-p",
-            "#{scroll_position} #{pane_height}",
-        ],
-        TrimMode::Trim,
-    )
-    .ok()?;
-
-    let mut parts = out.split_whitespace();
-    let scroll: i32 = parts.next()?.parse().ok()?;
-    let height: i32 = parts.next()?.parse().ok()?;
-
-    let start = -scroll;
-    let end = -scroll + height - 1;
-
-    Some((start.to_string(), end.to_string()))
-}
-
-pub fn get_pane_dimensions(pane_id: &str) -> Option<PaneDimensions> {
-    let out = tmux_output_trim(
-        &[
-            "display-message",
-            "-t",
-            pane_id,
-            "-p",
-            "#{pane_left} #{pane_top} #{pane_right} #{pane_bottom} #{pane_width} #{pane_height}",
-        ],
-        TrimMode::Trim,
-    )
-    .ok()?;
-
-    let parts: Vec<i32> = out
-        .split_whitespace()
-        .filter_map(|p| p.parse::<i32>().ok())
-        .collect();
-    if parts.len() != 6 {
-        return None;
-    }
-
-    Some(PaneDimensions {
-        left: parts[0],
-        top: parts[1],
-        bottom: parts[3],
-        width: parts[4],
-        height: parts[5],
-    })
-}
-
 pub fn calculate_popup_position(dimensions: &PaneDimensions) -> (i32, i32, i32, i32) {
     let y = if dimensions.top == 0 {
         dimensions.top
@@ -160,14 +173,6 @@ pub fn calculate_popup_position(dimensions: &PaneDimensions) -> (i32, i32, i32, 
         dimensions.bottom + 1
     };
     (dimensions.left, y, dimensions.width, dimensions.height)
-}
-
-pub fn is_in_copy_mode(pane_id: &str) -> bool {
-    tmux_output_trim(
-        &["display-message", "-t", pane_id, "-p", "#{pane_mode}"],
-        TrimMode::Trim,
-    )
-    .is_ok_and(|mode| mode == "copy-mode")
 }
 
 pub fn exit_copy_mode(pane_id: &str) {
@@ -181,9 +186,6 @@ fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
     }
     let mut out = String::from_utf8_lossy(&output.stdout).to_string();
     match trim {
-        TrimMode::Trim => {
-            out = out.trim().to_string();
-        }
         TrimMode::TrimNewlines => {
             out = out.trim_end_matches(['\n', '\r']).to_string();
         }
@@ -237,54 +239,8 @@ impl Clipboard {
     }
 }
 
-pub fn write_pane_content_buffer(pane_id: &str, content: &str) -> bool {
-    let buffer = pane_content_buffer_name(pane_id);
-    write_buffer(&buffer, content)
-}
-
-pub fn read_pane_content_buffer(pane_id: &str) -> Result<String> {
-    let buffer = pane_content_buffer_name(pane_id);
-    read_buffer_raw(&buffer)
-}
-
-pub fn write_result_buffer(pane_id: &str, text: &str) -> bool {
-    let buffer = result_buffer_name(pane_id);
-    write_buffer(&buffer, text)
-}
-
-pub fn read_result_buffer(pane_id: &str) -> Result<String> {
-    let buffer = result_buffer_name(pane_id);
-    read_buffer_trimmed(&buffer)
-}
-
-pub fn delete_buffers(pane_id: &str) -> bool {
-    let result = delete_buffer(&result_buffer_name(pane_id));
-    let pane = delete_buffer(&pane_content_buffer_name(pane_id));
-    result && pane
-}
-
-fn pane_content_buffer_name(pane_id: &str) -> String {
-    format!("__flash_copy_pane_content_{pane_id}__")
-}
-
-fn result_buffer_name(pane_id: &str) -> String {
-    format!("__flash_copy_result_{pane_id}__")
-}
-
-pub fn read_buffer_raw(buffer_name: &str) -> Result<String> {
-    tmux_output_trim(&["show-buffer", "-b", buffer_name], TrimMode::None)
-}
-
-fn read_buffer_trimmed(buffer_name: &str) -> Result<String> {
-    tmux_output_trim(&["show-buffer", "-b", buffer_name], TrimMode::TrimNewlines)
-}
-
 fn write_buffer(buffer_name: &str, text: &str) -> bool {
     tmux_run_quiet(&["set-buffer", "-b", buffer_name, "--", text])
-}
-
-fn delete_buffer(buffer_name: &str) -> bool {
-    tmux_run_quiet(&["delete-buffer", "-b", buffer_name])
 }
 
 fn paste_buffer(buffer_name: &str, pane_id: &str) -> bool {
@@ -343,7 +299,7 @@ mod tests {
     #[test]
     fn exit_action_cancel_and_copy_only_share_exit_code() {
         // Cancel and CopyOnly both use exit code 0.
-        // The parent distinguishes them by whether the result buffer is empty.
+        // The child applies copy-only before exiting, so the exit code is informational.
         assert_eq!(
             ExitAction::Cancel.exit_code(),
             ExitAction::CopyOnly.exit_code()
@@ -355,5 +311,41 @@ mod tests {
     fn exit_action_unknown_code_is_cancel() {
         assert!(!ExitAction::from_exit_code(Some(99)).should_paste());
         assert!(!ExitAction::from_exit_code(None).should_paste());
+    }
+
+    #[test]
+    fn parse_current_pane_info_handles_normal_mode() {
+        let info = parse_current_pane_info("%1\t\t\t24\t0\t0\t79\t23\t80")
+            .expect("pane info should parse");
+
+        assert_eq!(info.pane_id, "%1");
+        assert!(info.copy_mode_line_range.is_none());
+        assert_eq!(info.dimensions.left, 0);
+        assert_eq!(info.dimensions.top, 0);
+        assert_eq!(info.dimensions.bottom, 23);
+        assert_eq!(info.dimensions.width, 80);
+        assert_eq!(info.dimensions.height, 24);
+    }
+
+    #[test]
+    fn parse_current_pane_info_handles_copy_mode_range() {
+        let info = parse_current_pane_info("%2\tcopy-mode\t10\t24\t1\t2\t80\t25\t80")
+            .expect("pane info should parse");
+        let range = info.copy_mode_line_range.expect("copy-mode range");
+
+        assert_eq!(info.pane_id, "%2");
+        assert_eq!(range.start, "-10");
+        assert_eq!(range.end, "13");
+        assert_eq!(info.dimensions.left, 1);
+        assert_eq!(info.dimensions.top, 2);
+        assert_eq!(info.dimensions.bottom, 25);
+        assert_eq!(info.dimensions.width, 80);
+        assert_eq!(info.dimensions.height, 24);
+    }
+
+    #[test]
+    fn parse_current_pane_info_rejects_malformed_output() {
+        assert!(parse_current_pane_info("%1\tcopy-mode").is_none());
+        assert!(parse_current_pane_info("%1\t\t\t24\t0\t0\t79\t23\t80\textra").is_none());
     }
 }

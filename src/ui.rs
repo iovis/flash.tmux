@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType};
@@ -8,23 +8,35 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::config::{Config, LabelActionMode};
 use crate::search::{SearchInterface, SearchMatch, delete_prev_word, trim_wrapping_token};
-use crate::tmux::{ExitAction, write_result_buffer};
+use crate::tmux::ExitAction;
 
 pub struct InteractiveUI<'a> {
-    pane_id: String,
     config: Config,
     search: SearchInterface<'a>,
     search_query: String,
     cursor_pos: usize,
 }
 
+pub struct SelectedText {
+    pub text: String,
+    pub action: ExitAction,
+}
+
+impl SelectedText {
+    fn new(text: impl Into<String>, action: ExitAction) -> Self {
+        Self {
+            text: text.into(),
+            action,
+        }
+    }
+}
+
 impl<'a> InteractiveUI<'a> {
-    pub fn new(pane_id: String, pane_content: &'a str, config: Config) -> Self {
+    pub fn new(pane_content: &'a str, config: Config) -> Self {
         let label_chars = config.label_characters.clone();
         let search = SearchInterface::new(pane_content, label_chars);
 
         Self {
-            pane_id,
             config,
             search,
             search_query: String::new(),
@@ -33,7 +45,7 @@ impl<'a> InteractiveUI<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn run(&mut self) -> Result<ExitAction> {
+    pub fn run(&mut self) -> Result<SelectedText> {
         let _term_guard = TerminalModeGuard::new()?;
 
         self.display_content()?;
@@ -46,7 +58,7 @@ impl<'a> InteractiveUI<'a> {
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                     match (key.code, ctrl) {
                         (KeyCode::Char('c' | 'd'), true) | (KeyCode::Esc, _) => {
-                            return self.save_result("", ExitAction::Cancel);
+                            return Ok(SelectedText::new("", ExitAction::Cancel));
                         }
                         (KeyCode::Char('a'), true) | (KeyCode::Home, _) => {
                             self.cursor_pos = 0;
@@ -96,7 +108,7 @@ impl<'a> InteractiveUI<'a> {
                                     KeyCode::Char(' ') => ExitAction::PasteAndSpace,
                                     _ => ExitAction::Paste,
                                 };
-                                return self.save_result(text, action);
+                                return Ok(SelectedText::new(text, action));
                             }
                         }
                         (KeyCode::Char(c), false) => {
@@ -112,7 +124,7 @@ impl<'a> InteractiveUI<'a> {
                                     match_item.match_end,
                                     &self.config.trimmable_chars,
                                 );
-                                return self.save_result(text, action);
+                                return Ok(SelectedText::new(text, action));
                             }
 
                             if c.is_ascii_graphic() || c == ' ' {
@@ -230,15 +242,6 @@ impl<'a> InteractiveUI<'a> {
         }
 
         base
-    }
-
-    fn save_result(&self, text: &str, action: ExitAction) -> Result<ExitAction> {
-        let pane_id = &self.pane_id;
-        let wrote_result = write_result_buffer(pane_id, text);
-        if !text.is_empty() && !wrote_result {
-            bail!("failed to write selected text to tmux result buffer");
-        }
-        Ok(action)
     }
 }
 
@@ -804,7 +807,6 @@ mod tests {
     fn search_bar_empty_query() {
         let c = cfg();
         let ui = InteractiveUI {
-            pane_id: String::new(),
             search: SearchInterface::new("", c.label_characters.clone()),
             search_query: String::new(),
             cursor_pos: 0,
@@ -824,7 +826,6 @@ mod tests {
     fn search_bar_with_query() {
         let c = cfg();
         let ui = InteractiveUI {
-            pane_id: String::new(),
             search: SearchInterface::new("", c.label_characters.clone()),
             search_query: "hello".to_string(),
             cursor_pos: 5,
