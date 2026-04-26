@@ -47,7 +47,6 @@ impl<'a> InteractiveUI<'a> {
     #[allow(clippy::too_many_lines)]
     pub fn run(&mut self) -> Result<SelectedText> {
         let _term_guard = TerminalModeGuard::new()?;
-
         self.display_content()?;
 
         loop {
@@ -270,7 +269,9 @@ impl Drop for TerminalModeGuard {
             let _ = terminal::disable_raw_mode();
         }
         let mut out = io::stderr();
-        let _ = execute!(out, Show, Clear(ClearType::All), MoveTo(0, 0));
+        if out.is_terminal() {
+            let _ = execute!(out, Show);
+        }
     }
 }
 
