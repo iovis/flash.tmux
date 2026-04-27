@@ -23,33 +23,45 @@ pub struct Config {
 
 impl Config {
     pub fn defaults() -> Self {
+        let highlight_style = StyleSpec::new(Some(Color::Rgb {
+            r: 186,
+            g: 187,
+            b: 242,
+        }))
+        .bold();
+        let current_style = StyleSpec::new(Some(Color::Rgb {
+            r: 239,
+            g: 159,
+            b: 119,
+        }))
+        .bold();
+        let label_style = StyleSpec::new(Some(Color::Rgb {
+            r: 166,
+            g: 209,
+            b: 138,
+        }))
+        .bold();
+        let prompt_style = StyleSpec::new(Some(Color::Magenta)).bold();
+        let base_style = StyleSpec::new(Some(BASE_TEXT_COLOR));
+
         Self {
             prompt_placeholder_text: "search...".to_string(),
             prompt_indicator: "❯".to_string(),
             label_characters: "jklhgfdsauiopytrewqnmvbcxz".to_string(),
             trimmable_chars: "()[]{}\"'`,.:;".to_string(),
             label_action_mode: LabelActionMode::Default,
-            highlight_style: StyleSpec::new(Some(Color::Rgb {
-                r: 186,
-                g: 187,
-                b: 242,
-            }))
-            .bold(),
-            current_style: StyleSpec::new(Some(Color::Rgb {
-                r: 239,
-                g: 159,
-                b: 119,
-            }))
-            .bold(),
-            label_style: StyleSpec::new(Some(Color::Rgb {
-                r: 166,
-                g: 209,
-                b: 138,
-            }))
-            .bold(),
-            prompt_style: StyleSpec::new(Some(Color::Magenta)).bold(),
-            base_style: StyleSpec::new(Some(BASE_TEXT_COLOR)),
-            style_sequences: StyleSequences::new(),
+            highlight_style,
+            current_style,
+            label_style,
+            prompt_style,
+            base_style,
+            style_sequences: StyleSequences::new(
+                base_style,
+                highlight_style,
+                current_style,
+                label_style,
+                prompt_style,
+            ),
         }
     }
 }
@@ -93,14 +105,51 @@ impl StyleSpec {
 pub struct StyleSequences {
     pub reset: String,
     pub base: String,
+    pub base_text: StyleSequence,
+    pub highlight: StyleSequence,
+    pub current: StyleSequence,
+    pub label: StyleSequence,
+    pub prompt: StyleSequence,
+}
+
+#[derive(Clone)]
+pub struct StyleSequence {
+    pub prefix: String,
+    pub suffix: String,
 }
 
 impl StyleSequences {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub fn new(
+        base_style: StyleSpec,
+        highlight_style: StyleSpec,
+        current_style: StyleSpec,
+        label_style: StyleSpec,
+        prompt_style: StyleSpec,
+    ) -> Self {
         Self {
             reset: format!("{}", SetAttribute(Attribute::Reset)),
             base: format!("{}", SetForegroundColor(BASE_TEXT_COLOR)),
+            base_text: StyleSequence::from_style(base_style),
+            highlight: StyleSequence::from_style(highlight_style),
+            current: StyleSequence::from_style(current_style),
+            label: StyleSequence::from_style(label_style),
+            prompt: StyleSequence::from_style(prompt_style),
+        }
+    }
+}
+
+impl StyleSequence {
+    fn from_style(style: StyleSpec) -> Self {
+        const SENTINEL: &str = "\x1f";
+        let rendered = style.apply(SENTINEL);
+        let (prefix, suffix) = rendered
+            .split_once(SENTINEL)
+            .expect("styled sentinel should be present");
+
+        Self {
+            prefix: prefix.to_string(),
+            suffix: suffix.to_string(),
         }
     }
 }

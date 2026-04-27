@@ -6,7 +6,7 @@ use crossterm::{QueueableCommand, SynchronizedUpdate, execute};
 use std::io::{self, IsTerminal, Write};
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{Config, LabelActionMode};
+use crate::config::{Config, LabelActionMode, StyleSequence};
 use crate::search::{SearchInterface, SearchMatch, delete_prev_word, trim_wrapping_token};
 use crate::tmux::ExitAction;
 
@@ -160,8 +160,7 @@ impl<'a> InteractiveUI<'a> {
             out.queue(MoveTo(0, 0))?;
             out.queue(Clear(ClearType::FromCursorDown))?;
 
-            self.display_pane_content(out, available_height)
-                .map_err(io::Error::other)?;
+            self.display_pane_content(out, available_height)?;
 
             let prompt = self.build_search_bar_output();
             let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
@@ -172,7 +171,6 @@ impl<'a> InteractiveUI<'a> {
                 u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX);
             out.queue(MoveTo(cursor_col, prompt_row))?;
             out.queue(Show)?;
-
             Ok(())
         })??;
         Ok(())
@@ -196,7 +194,7 @@ impl<'a> InteractiveUI<'a> {
         &mut self,
         out: &mut io::Stderr,
         available_height: usize,
-    ) -> Result<()> {
+    ) -> io::Result<()> {
         let total_lines = self.search.lines.len().min(available_height);
         let first_visible = self
             .search
@@ -226,26 +224,20 @@ impl<'a> InteractiveUI<'a> {
 
     fn build_search_bar_output(&self) -> String {
         let mut base = String::new();
+        push_styled(
+            &mut base,
+            &self.config.style_sequences.prompt,
+            &self.config.prompt_indicator,
+        );
+        base.push(' ');
+
         if self.search_query.is_empty() {
-            base.push_str(
-                &self
-                    .config
-                    .prompt_style
-                    .apply(&self.config.prompt_indicator),
-            );
-            base.push(' ');
-            base.push_str(&base_text(
+            push_styled(
+                &mut base,
+                &self.config.style_sequences.base_text,
                 &self.config.prompt_placeholder_text,
-                &self.config,
-            ));
-        } else {
-            base.push_str(
-                &self
-                    .config
-                    .prompt_style
-                    .apply(&self.config.prompt_indicator),
             );
-            base.push(' ');
+        } else {
             base.push_str(&self.search_query);
         }
 
@@ -418,10 +410,6 @@ impl RenderScratch {
     }
 }
 
-fn base_text(text: &str, config: &Config) -> String {
-    config.base_style.apply(text)
-}
-
 fn label_key_action(key: char, label_action_mode: LabelActionMode) -> ExitAction {
     let should_paste = match label_action_mode {
         LabelActionMode::Default => key.is_ascii_lowercase(),
@@ -444,13 +432,13 @@ fn flush_segment(out: &mut String, buffer: &mut String, style: StyleKind, config
         StyleKind::Base => out.push_str(buffer),
         StyleKind::Highlight => {
             out.push_str(&config.style_sequences.reset);
-            out.push_str(&config.highlight_style.apply(buffer));
+            push_styled(out, &config.style_sequences.highlight, buffer);
             out.push_str(&config.style_sequences.reset);
             out.push_str(&config.style_sequences.base);
         }
         StyleKind::Current => {
             out.push_str(&config.style_sequences.reset);
-            out.push_str(&config.current_style.apply(buffer));
+            push_styled(out, &config.style_sequences.current, buffer);
             out.push_str(&config.style_sequences.reset);
             out.push_str(&config.style_sequences.base);
         }
@@ -462,14 +450,19 @@ fn flush_segment(out: &mut String, buffer: &mut String, style: StyleKind, config
 fn push_label(out: &mut String, label: char, config: &Config) {
     let mut label_buf = [0u8; 4];
     out.push_str(&config.style_sequences.reset);
-    out.push_str(
-        config
-            .label_style
-            .apply(label.encode_utf8(&mut label_buf))
-            .as_str(),
+    push_styled(
+        out,
+        &config.style_sequences.label,
+        label.encode_utf8(&mut label_buf),
     );
     out.push_str(&config.style_sequences.reset);
     out.push_str(&config.style_sequences.base);
+}
+
+fn push_styled(out: &mut String, style: &StyleSequence, text: &str) {
+    out.push_str(&style.prefix);
+    out.push_str(text);
+    out.push_str(&style.suffix);
 }
 
 #[cfg(test)]
@@ -896,7 +889,7 @@ mod tests {
         };
 
         let result = ui.build_search_bar_output();
-        let expected = format!("{} hello", c.prompt_style.apply(&c.prompt_indicator),);
+        let expected = format!("{} hello", c.prompt_style.apply(&c.prompt_indicator));
         assert_eq!(result, expected);
     }
 }

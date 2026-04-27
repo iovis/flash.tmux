@@ -34,6 +34,7 @@ pub struct SearchInterface<'a> {
     matches: Vec<SearchMatch<'a>>,
     snapshots: Vec<SearchSnapshot<'a>>,
     line_match_ranges: Vec<(usize, usize)>,
+    label_match_indices: [Option<usize>; 256],
     label_chars: String,
     last_query: String,
 }
@@ -49,6 +50,7 @@ impl<'a> SearchInterface<'a> {
             matches: Vec::new(),
             snapshots: Vec::new(),
             line_match_ranges,
+            label_match_indices: [None; 256],
             label_chars,
             last_query: String::new(),
         }
@@ -58,6 +60,7 @@ impl<'a> SearchInterface<'a> {
         if query.is_empty() {
             self.matches.clear();
             self.clear_line_match_ranges();
+            self.clear_label_match_indices();
             self.last_query.clear();
             self.snapshots.clear();
             return &self.matches;
@@ -81,6 +84,7 @@ impl<'a> SearchInterface<'a> {
         }
 
         assign_labels(&mut self.matches, query_bytes, &self.label_chars);
+        self.rebuild_label_match_indices();
         self.rebuild_line_match_ranges();
         self.last_query = query_cmp;
 
@@ -121,7 +125,11 @@ impl<'a> SearchInterface<'a> {
     }
 
     pub fn get_match_by_label(&self, label: char) -> Option<&SearchMatch<'a>> {
-        self.matches.iter().find(|m| m.label == Some(label))
+        if !label.is_ascii() {
+            return None;
+        }
+
+        self.label_match_indices[usize::from(label as u8)].and_then(|idx| self.matches.get(idx))
     }
 
     pub fn first_visible_match(&self, max_lines: usize) -> Option<&SearchMatch<'a>> {
@@ -137,6 +145,21 @@ impl<'a> SearchInterface<'a> {
 
     fn clear_line_match_ranges(&mut self) {
         self.line_match_ranges.fill((0, 0));
+    }
+
+    fn clear_label_match_indices(&mut self) {
+        self.label_match_indices.fill(None);
+    }
+
+    fn rebuild_label_match_indices(&mut self) {
+        self.clear_label_match_indices();
+        for (idx, m) in self.matches.iter().enumerate() {
+            if let Some(label) = m.label
+                && label.is_ascii()
+            {
+                self.label_match_indices[usize::from(label as u8)] = Some(idx);
+            }
+        }
     }
 
     fn rebuild_line_match_ranges(&mut self) {
@@ -604,6 +627,32 @@ mod tests {
                 .expect("expected label to be assigned for test match");
             assert!(!"abc".contains(label));
         }
+    }
+
+    #[test]
+    fn label_lookup_returns_indexed_match() {
+        let mut search = SearchInterface::new("alpha beta", default_labels());
+        search.search("a");
+
+        let found = search
+            .get_match_by_label('j')
+            .expect("expected first default label to resolve");
+
+        assert_eq!(found.text, "beta");
+        assert_eq!(found.label, Some('j'));
+        assert!(search.get_match_by_label('J').is_none());
+        assert!(search.get_match_by_label('é').is_none());
+    }
+
+    #[test]
+    fn label_lookup_clears_when_query_clears() {
+        let mut search = SearchInterface::new("alpha beta", default_labels());
+        search.search("a");
+        assert!(search.get_match_by_label('j').is_some());
+
+        search.search("");
+
+        assert!(search.get_match_by_label('j').is_none());
     }
 
     #[test]
