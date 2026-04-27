@@ -13,6 +13,7 @@ use crate::tmux::ExitAction;
 pub struct InteractiveUI<'a> {
     config: Config,
     search: SearchInterface<'a>,
+    render_scratch: RenderScratch,
     search_query: String,
     cursor_pos: usize,
 }
@@ -39,6 +40,7 @@ impl<'a> InteractiveUI<'a> {
         Self {
             config,
             search,
+            render_scratch: RenderScratch::new(),
             search_query: String::new(),
             cursor_pos: 0,
         }
@@ -148,7 +150,7 @@ impl<'a> InteractiveUI<'a> {
         self.display_content()
     }
 
-    fn display_content(&self) -> Result<()> {
+    fn display_content(&mut self) -> Result<()> {
         let mut out = io::stderr();
         let available_height = Self::visible_line_limit();
         let height = available_height.saturating_add(1);
@@ -190,19 +192,26 @@ impl<'a> InteractiveUI<'a> {
         col
     }
 
-    fn display_pane_content(&self, out: &mut io::Stderr, available_height: usize) -> Result<()> {
+    fn display_pane_content(
+        &mut self,
+        out: &mut io::Stderr,
+        available_height: usize,
+    ) -> Result<()> {
         let total_lines = self.search.lines.len().min(available_height);
         let first_visible = self
             .search
             .first_visible_match(total_lines)
             .map(|m| (m.line, m.col, m.match_start, m.match_end));
+        let search = &self.search;
+        let config = &self.config;
+        let scratch = &mut self.render_scratch;
 
-        for (line_idx, line) in self.search.lines.iter().take(available_height).enumerate() {
-            let matches = self.search.get_matches_at_line(line_idx);
+        for (line_idx, line) in search.lines.iter().take(available_height).enumerate() {
+            let matches = search.get_matches_at_line(line_idx);
             let current_match = first_visible.filter(|m| m.0 == line_idx);
             let is_last_line = line_idx + 1 == total_lines;
 
-            let output = render_line_with_matches(line, matches, &self.config, current_match);
+            let output = scratch.render_line_with_matches(line, matches, config, current_match);
 
             if is_last_line {
                 out.write_all(output.as_bytes())?;
@@ -292,6 +301,123 @@ impl StyleKind {
     }
 }
 
+struct RenderScratch {
+    label_positions: Vec<(usize, char)>,
+    style_map: Vec<StyleKind>,
+    output: String,
+    segment: String,
+}
+
+impl RenderScratch {
+    fn new() -> Self {
+        Self {
+            label_positions: Vec::new(),
+            style_map: Vec::new(),
+            output: String::new(),
+            segment: String::new(),
+        }
+    }
+
+    fn render_line_with_matches(
+        &mut self,
+        line: &str,
+        matches: &[SearchMatch<'_>],
+        config: &Config,
+        current_match: Option<(usize, usize, usize, usize)>,
+    ) -> &str {
+        self.output.clear();
+
+        if line.is_empty() {
+            self.output.push_str(&config.style_sequences.base);
+            self.output.push_str(&config.style_sequences.reset);
+            return &self.output;
+        }
+        if matches.is_empty() {
+            self.output.push_str(&config.style_sequences.base);
+            self.output.push_str(line);
+            self.output.push_str(&config.style_sequences.reset);
+            return &self.output;
+        }
+
+        self.collect_line_render_data(line, matches, current_match);
+        self.output.push_str(&config.style_sequences.base);
+
+        let mut active = StyleKind::Base;
+        self.segment.clear();
+
+        let mut label_idx = 0usize;
+        for (idx, ch) in line.char_indices() {
+            if label_idx < self.label_positions.len() && self.label_positions[label_idx].0 == idx {
+                flush_segment(&mut self.output, &mut self.segment, active, config);
+                push_label(&mut self.output, self.label_positions[label_idx].1, config);
+                label_idx += 1;
+                continue;
+            }
+
+            let style_kind = self.style_map.get(idx).copied().unwrap_or(StyleKind::Base);
+            if style_kind != active {
+                flush_segment(&mut self.output, &mut self.segment, active, config);
+                active = style_kind;
+            }
+
+            self.segment.push(ch);
+        }
+
+        if label_idx < self.label_positions.len() && self.label_positions[label_idx].0 == line.len()
+        {
+            flush_segment(&mut self.output, &mut self.segment, active, config);
+            push_label(&mut self.output, self.label_positions[label_idx].1, config);
+        }
+
+        flush_segment(&mut self.output, &mut self.segment, active, config);
+
+        if !self.output.ends_with(&config.style_sequences.reset) {
+            self.output.push_str(&config.style_sequences.reset);
+        }
+
+        &self.output
+    }
+
+    fn collect_line_render_data(
+        &mut self,
+        line: &str,
+        matches: &[SearchMatch<'_>],
+        current_match: Option<(usize, usize, usize, usize)>,
+    ) {
+        self.label_positions.clear();
+        self.label_positions.extend(
+            matches
+                .iter()
+                .filter_map(|m| m.label.map(|label| (m.col + m.match_end, label)))
+                .filter(|(pos, _)| *pos <= line.len()),
+        );
+        self.label_positions.sort_by_key(|(pos, _)| *pos);
+        self.label_positions.dedup_by_key(|(pos, _)| *pos);
+
+        self.style_map.clear();
+        self.style_map.resize(line.len(), StyleKind::Base);
+        for m in matches {
+            let style_kind = if current_match == Some((m.line, m.col, m.match_start, m.match_end)) {
+                StyleKind::Current
+            } else {
+                StyleKind::Highlight
+            };
+            let start = m.col + m.match_start;
+            let end = m.col + m.match_end;
+            if start >= end {
+                continue;
+            }
+            let start = start.min(line.len());
+            let end = end.min(line.len());
+            for slot in self.style_map.iter_mut().take(end).skip(start) {
+                if style_kind.priority() > slot.priority() {
+                    *slot = style_kind;
+                }
+            }
+        }
+    }
+}
+
 fn base_text(text: &str, config: &Config) -> String {
     config.base_style.apply(text)
 }
@@ -307,97 +433,6 @@ fn label_key_action(key: char, label_action_mode: LabelActionMode) -> ExitAction
     } else {
         ExitAction::CopyOnly
     }
-}
-
-fn render_line_with_matches(
-    line: &str,
-    matches: &[SearchMatch<'_>],
-    config: &Config,
-    current_match: Option<(usize, usize, usize, usize)>,
-) -> String {
-    if line.is_empty() {
-        return format!(
-            "{}{}",
-            config.style_sequences.base, config.style_sequences.reset
-        );
-    }
-    if matches.is_empty() {
-        return format!(
-            "{}{}{}",
-            config.style_sequences.base, line, config.style_sequences.reset
-        );
-    }
-
-    let mut label_positions: Vec<(usize, char)> = matches
-        .iter()
-        .filter_map(|m| m.label.map(|label| (m.col + m.match_end, label)))
-        .filter(|(pos, _)| *pos <= line.len())
-        .collect();
-    label_positions.sort_by_key(|(pos, _)| *pos);
-    label_positions.dedup_by_key(|(pos, _)| *pos);
-
-    let mut style_map = vec![StyleKind::Base; line.len()];
-    for m in matches {
-        let style_kind = if current_match == Some((m.line, m.col, m.match_start, m.match_end)) {
-            StyleKind::Current
-        } else {
-            StyleKind::Highlight
-        };
-        let start = m.col + m.match_start;
-        let end = m.col + m.match_end;
-        if start >= end {
-            continue;
-        }
-        let start = start.min(line.len());
-        let end = end.min(line.len());
-        for slot in style_map.iter_mut().take(end).skip(start) {
-            if style_kind.priority() > slot.priority() {
-                *slot = style_kind;
-            }
-        }
-    }
-
-    let mut out = String::new();
-    out.push_str(&config.style_sequences.base);
-
-    let mut active = StyleKind::Base;
-    let mut buffer = String::new();
-
-    let mut label_iter = label_positions.iter().peekable();
-    for (idx, ch) in line.char_indices() {
-        if let Some((_, label)) = label_iter.next_if(|(pos, _)| *pos == idx) {
-            flush_segment(&mut out, &mut buffer, active, config);
-            out.push_str(&config.style_sequences.reset);
-            out.push_str(&config.label_style.apply(&label.to_string()));
-            out.push_str(&config.style_sequences.reset);
-            out.push_str(&config.style_sequences.base);
-            continue;
-        }
-
-        let style_kind = style_map.get(idx).copied().unwrap_or(StyleKind::Base);
-        if style_kind != active {
-            flush_segment(&mut out, &mut buffer, active, config);
-            active = style_kind;
-        }
-
-        buffer.push(ch);
-    }
-
-    if let Some((_, label)) = label_iter.next_if(|(pos, _)| *pos == line.len()) {
-        flush_segment(&mut out, &mut buffer, active, config);
-        out.push_str(&config.style_sequences.reset);
-        out.push_str(&config.label_style.apply(&label.to_string()));
-        out.push_str(&config.style_sequences.reset);
-        out.push_str(&config.style_sequences.base);
-    }
-
-    flush_segment(&mut out, &mut buffer, active, config);
-
-    if !out.ends_with(&config.style_sequences.reset) {
-        out.push_str(&config.style_sequences.reset);
-    }
-
-    out
 }
 
 fn flush_segment(out: &mut String, buffer: &mut String, style: StyleKind, config: &Config) {
@@ -422,6 +457,19 @@ fn flush_segment(out: &mut String, buffer: &mut String, style: StyleKind, config
     }
 
     buffer.clear();
+}
+
+fn push_label(out: &mut String, label: char, config: &Config) {
+    let mut label_buf = [0u8; 4];
+    out.push_str(&config.style_sequences.reset);
+    out.push_str(
+        config
+            .label_style
+            .apply(label.encode_utf8(&mut label_buf))
+            .as_str(),
+    );
+    out.push_str(&config.style_sequences.reset);
+    out.push_str(&config.style_sequences.base);
 }
 
 #[cfg(test)]
@@ -491,6 +539,18 @@ mod tests {
             match_start,
             match_end,
         }
+    }
+
+    fn render_line_with_matches(
+        line: &str,
+        matches: &[SearchMatch<'_>],
+        config: &Config,
+        current_match: Option<(usize, usize, usize, usize)>,
+    ) -> String {
+        let mut scratch = RenderScratch::new();
+        scratch
+            .render_line_with_matches(line, matches, config, current_match)
+            .to_string()
     }
 
     #[test]
@@ -809,6 +869,7 @@ mod tests {
         let c = cfg();
         let ui = InteractiveUI {
             search: SearchInterface::new("", c.label_characters.clone()),
+            render_scratch: RenderScratch::new(),
             search_query: String::new(),
             cursor_pos: 0,
             config: c.clone(),
@@ -828,6 +889,7 @@ mod tests {
         let c = cfg();
         let ui = InteractiveUI {
             search: SearchInterface::new("", c.label_characters.clone()),
+            render_scratch: RenderScratch::new(),
             search_query: "hello".to_string(),
             cursor_pos: 5,
             config: c.clone(),

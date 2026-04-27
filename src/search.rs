@@ -21,6 +21,12 @@ struct SearchSnapshot<'a> {
     matches: Vec<SearchMatch<'a>>,
 }
 
+#[derive(Clone, Copy)]
+struct LabelCandidate {
+    label: u8,
+    lower: u8,
+}
+
 #[derive(Debug)]
 pub struct SearchInterface<'a> {
     pub lines: Vec<&'a str>,
@@ -333,6 +339,11 @@ fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &st
     let mut query_chars = [false; 256];
     let mut continuation_chars = [false; 256];
     let mut used_labels = [false; 256];
+    let mut token_chars = [false; 256];
+    let mut candidates = [LabelCandidate { label: 0, lower: 0 }; 256];
+    let mut candidates_len = 0usize;
+    let mut used_candidates = 0usize;
+    let mut cached_token: Option<(*const u8, usize)> = None;
 
     for byte in query {
         query_chars[usize::from(*byte)] = true;
@@ -345,25 +356,42 @@ fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &st
         }
     }
 
+    for label in label_chars.bytes() {
+        let lower = label.to_ascii_lowercase();
+        if query_chars[usize::from(lower)] || continuation_chars[usize::from(lower)] {
+            continue;
+        }
+        if candidates_len < candidates.len() {
+            candidates[candidates_len] = LabelCandidate { label, lower };
+            candidates_len += 1;
+        }
+    }
+
     for m in matches.iter_mut() {
-        let mut token_chars = [false; 256];
-        for byte in m.text.bytes() {
-            token_chars[usize::from(byte.to_ascii_lowercase())] = true;
+        m.label = None;
+        if used_candidates == candidates_len {
+            continue;
         }
 
-        m.label = None;
-        for label in label_chars.bytes() {
-            let lower = label.to_ascii_lowercase();
-            if used_labels[usize::from(label)]
-                || query_chars[usize::from(lower)]
-                || continuation_chars[usize::from(lower)]
-                || token_chars[usize::from(lower)]
+        let token_id = (m.text.as_ptr(), m.text.len());
+        if cached_token != Some(token_id) {
+            token_chars.fill(false);
+            for byte in m.text.bytes() {
+                token_chars[usize::from(byte.to_ascii_lowercase())] = true;
+            }
+            cached_token = Some(token_id);
+        }
+
+        for candidate in &candidates[..candidates_len] {
+            if used_labels[usize::from(candidate.label)]
+                || token_chars[usize::from(candidate.lower)]
             {
                 continue;
             }
 
-            m.label = Some(char::from(label));
-            used_labels[usize::from(label)] = true;
+            m.label = Some(char::from(candidate.label));
+            used_labels[usize::from(candidate.label)] = true;
+            used_candidates += 1;
             break;
         }
     }
