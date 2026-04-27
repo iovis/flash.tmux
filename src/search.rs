@@ -8,10 +8,25 @@ pub struct SearchMatch<'a> {
     pub match_end: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SearchToken<'a> {
+    text: &'a str,
+    line: usize,
+    col: usize,
+}
+
+#[derive(Debug)]
+struct SearchSnapshot<'a> {
+    query: String,
+    matches: Vec<SearchMatch<'a>>,
+}
+
 #[derive(Debug)]
 pub struct SearchInterface<'a> {
     pub lines: Vec<&'a str>,
+    tokens: Vec<SearchToken<'a>>,
     matches: Vec<SearchMatch<'a>>,
+    snapshots: Vec<SearchSnapshot<'a>>,
     line_match_ranges: Vec<(usize, usize)>,
     label_chars: String,
     last_query: String,
@@ -20,10 +35,13 @@ pub struct SearchInterface<'a> {
 impl<'a> SearchInterface<'a> {
     pub fn new(pane_content: &'a str, label_chars: String) -> Self {
         let lines: Vec<&str> = pane_content.split('\n').collect();
+        let tokens = build_tokens(&lines);
         let line_match_ranges = vec![(0, 0); lines.len()];
         Self {
             lines,
+            tokens,
             matches: Vec::new(),
+            snapshots: Vec::new(),
             line_match_ranges,
             label_chars,
             last_query: String::new(),
@@ -35,6 +53,7 @@ impl<'a> SearchInterface<'a> {
             self.matches.clear();
             self.clear_line_match_ranges();
             self.last_query.clear();
+            self.snapshots.clear();
             return &self.matches;
         }
 
@@ -43,17 +62,16 @@ impl<'a> SearchInterface<'a> {
         let query_len = query_bytes.len();
 
         if !self.last_query.is_empty() && query_cmp.starts_with(&self.last_query) {
+            if query_len > self.last_query.len() {
+                self.store_snapshot();
+            }
             self.refine_matches(query_bytes, self.last_query.len());
+        } else if self.last_query.starts_with(&query_cmp) && self.restore_snapshot(&query_cmp) {
+            // Snapshot restored; labels and line ranges are rebuilt below.
         } else {
+            self.snapshots.clear();
             self.matches.clear();
             self.scan_matches(query_bytes, query_len);
-            self.matches.sort_unstable_by(|left, right| {
-                right
-                    .line
-                    .cmp(&left.line)
-                    .then_with(|| right.col.cmp(&left.col))
-                    .then_with(|| right.match_start.cmp(&left.match_start))
-            });
         }
 
         assign_labels(&mut self.matches, query_bytes, &self.label_chars);
@@ -61,6 +79,39 @@ impl<'a> SearchInterface<'a> {
         self.last_query = query_cmp;
 
         &self.matches
+    }
+
+    fn store_snapshot(&mut self) {
+        if self.last_query.is_empty() {
+            return;
+        }
+
+        if let Some(snapshot) = self
+            .snapshots
+            .iter_mut()
+            .find(|snapshot| snapshot.query == self.last_query)
+        {
+            snapshot.matches.clone_from(&self.matches);
+            return;
+        }
+
+        self.snapshots.push(SearchSnapshot {
+            query: self.last_query.clone(),
+            matches: self.matches.clone(),
+        });
+    }
+
+    fn restore_snapshot(&mut self, query: &str) -> bool {
+        let Some(snapshot) = self
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.query == query)
+        else {
+            return false;
+        };
+
+        self.matches.clone_from(&snapshot.matches);
+        true
     }
 
     pub fn get_match_by_label(&self, label: char) -> Option<&SearchMatch<'a>> {
@@ -101,49 +152,35 @@ impl<'a> SearchInterface<'a> {
     }
 
     fn scan_matches(&mut self, query_bytes: &[u8], query_len: usize) {
-        for (line_idx, line) in self.lines.iter().copied().enumerate() {
-            let line_bytes = line.as_bytes();
-            let mut idx = 0usize;
+        let first_query_byte = query_bytes[0];
 
-            while idx < line_bytes.len() {
-                while idx < line_bytes.len() && is_ascii_whitespace(line_bytes[idx]) {
-                    idx += 1;
-                }
-                if idx >= line_bytes.len() {
-                    break;
+        for token in self.tokens.iter().rev() {
+            let token_bytes = token.text.as_bytes();
+            if query_len > token_bytes.len() {
+                continue;
+            }
+
+            for match_pos in (0..=token_bytes.len() - query_len).rev() {
+                if !token_bytes[match_pos].eq_ignore_ascii_case(&first_query_byte)
+                    || !is_utf8_boundary(token_bytes, match_pos)
+                    || !is_utf8_boundary(token_bytes, match_pos + query_len)
+                    || !ascii_case_insensitive_eq(
+                        &token_bytes[match_pos..match_pos + query_len],
+                        query_bytes,
+                    )
+                {
+                    continue;
                 }
 
-                let token_start = idx;
-                while idx < line_bytes.len() && !is_ascii_whitespace(line_bytes[idx]) {
-                    idx += 1;
-                }
-
-                let token_end = idx;
-                let token = &line[token_start..token_end];
-                let token_bytes = token.as_bytes();
-                if query_len <= token_bytes.len() {
-                    for match_pos in 0..=token_bytes.len() - query_len {
-                        if !is_utf8_boundary(token_bytes, match_pos)
-                            || !is_utf8_boundary(token_bytes, match_pos + query_len)
-                            || !ascii_case_insensitive_eq(
-                                &token_bytes[match_pos..match_pos + query_len],
-                                query_bytes,
-                            )
-                        {
-                            continue;
-                        }
-
-                        let candidate = SearchMatch {
-                            text: token,
-                            line: line_idx,
-                            col: token_start,
-                            label: None,
-                            match_start: match_pos,
-                            match_end: match_pos + query_len,
-                        };
-                        self.matches.push(candidate);
-                    }
-                }
+                let candidate = SearchMatch {
+                    text: token.text,
+                    line: token.line,
+                    col: token.col,
+                    label: None,
+                    match_start: match_pos,
+                    match_end: match_pos + query_len,
+                };
+                self.matches.push(candidate);
             }
         }
     }
@@ -166,6 +203,37 @@ impl<'a> SearchInterface<'a> {
             candidate.match_end = candidate.match_start + query_bytes.len();
         }
     }
+}
+
+fn build_tokens<'a>(lines: &[&'a str]) -> Vec<SearchToken<'a>> {
+    let mut tokens = Vec::new();
+
+    for (line_idx, line) in lines.iter().copied().enumerate() {
+        let line_bytes = line.as_bytes();
+        let mut idx = 0usize;
+
+        while idx < line_bytes.len() {
+            while idx < line_bytes.len() && is_ascii_whitespace(line_bytes[idx]) {
+                idx += 1;
+            }
+            if idx >= line_bytes.len() {
+                break;
+            }
+
+            let token_start = idx;
+            while idx < line_bytes.len() && !is_ascii_whitespace(line_bytes[idx]) {
+                idx += 1;
+            }
+
+            tokens.push(SearchToken {
+                text: &line[token_start..idx],
+                line: line_idx,
+                col: token_start,
+            });
+        }
+    }
+
+    tokens
 }
 
 pub fn delete_prev_word(input: &str) -> String {
@@ -369,6 +437,28 @@ mod tests {
     }
 
     #[test]
+    fn search_ordering_is_reverse_across_lines_tokens_and_offsets() {
+        let mut search = SearchInterface::new("banana bandana\nanagram banana", default_labels());
+        let matches = search.search("ana");
+        let positions: Vec<_> = matches
+            .iter()
+            .map(|m| (m.line, m.col, m.match_start))
+            .collect();
+
+        assert_eq!(
+            positions,
+            vec![
+                (1, 8, 3),
+                (1, 8, 1),
+                (1, 0, 0),
+                (0, 7, 4),
+                (0, 0, 3),
+                (0, 0, 1)
+            ]
+        );
+    }
+
+    #[test]
     fn search_does_not_emit_duplicate_matches() {
         let mut search = SearchInterface::new("abc abc abc", default_labels());
         let matches = search.search("a");
@@ -421,6 +511,30 @@ mod tests {
             assert_eq!(left.match_end, right.match_end);
             assert_eq!(left.label, right.label);
         }
+    }
+
+    #[test]
+    fn search_restores_snapshot_when_query_shrinks_to_previous_prefix() {
+        let pane = "alpha alphabet alphanumeric\nbeta alphabet";
+        let mut incremental = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        incremental.search("a");
+        incremental.search("al");
+        incremental.search("alp");
+        let restored_matches: Vec<_> = incremental
+            .search("al")
+            .iter()
+            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .collect();
+        let fresh_matches: Vec<_> = fresh
+            .search("al")
+            .iter()
+            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .collect();
+
+        assert_eq!(incremental.snapshots.len(), 2);
+        assert_eq!(restored_matches, fresh_matches);
     }
 
     #[test]
@@ -486,6 +600,7 @@ mod tests {
         let matches = search.search("a");
         assert!(!matches.is_empty());
         assert_eq!(search.lines, vec!["alpha beta", "gamma"]);
+        assert_eq!(search.tokens.len(), 3);
     }
 
     #[test]
