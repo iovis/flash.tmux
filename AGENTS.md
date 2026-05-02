@@ -39,6 +39,32 @@ Context for this repo:
 - `src/tmux.rs`: tmux helpers + clipboard.
 - `src/config.rs`: styling/config defaults.
 - `src/lib.rs`: module declarations.
+- `src/bin/*_bench.rs`: standalone benchmark binaries adapted to the v0.2.2
+  owned-match API.
+
+## Benchmarks
+
+- This historical benchmark branch keeps the product implementation pinned to
+  `v0.2.2` while tracking the benchmark contract from `bench`.
+- Scaled synthetic fixture: `../flash-bench-content.txt`.
+- Actual-size realistic fixtures and their dimensions/checksums are documented
+  in `bench/realistic/README.md`.
+- Build release app and benchmark binaries with `just release`.
+- Verify benchmark checksums with `just checksums-all`.
+  - Expected synthetic outputs: `1787`, `4278`, `6728401868494091241`.
+- Run the scaled synthetic suite with `just bench`.
+- Run the actual-size suite with `just bench-realistic`.
+- Run cold-selection initialization, search, backspace, and render workloads
+  with `just bench-cold`.
+- `just bench-all` runs the synthetic and realistic suites. Keep the realistic
+  workloads primary and the synthetic suite as a historical throughput gate.
+- `just measure-realistic-allocations` and `just measure-cold-allocations`
+  report allocation behavior for the historical implementation.
+- Benchmark recipes accept optional iteration and run counts; synthetic recipes
+  additionally accept a fixture copy count.
+- `hyperfine` must be installed to run benchmark recipes.
+- If `just` cannot write runtime files under `/run/user/...`, run with
+  `XDG_RUNTIME_DIR=/tmp`.
 
 ## Rust conventions
 

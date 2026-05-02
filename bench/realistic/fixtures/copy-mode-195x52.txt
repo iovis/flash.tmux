@@ -1,0 +1,52 @@
+flash.tmux main
+> cargo test --release search::tests::search_ordering_is_reverse_across_lines_tokens_and_offsets -- --exact --nocapture
+   Compiling flash_tmux v0.4.0 (/home/user/code/rust/flash.tmux)
+    Finished `release` profile [optimized] target(s) in 3.91s
+     Running unittests src/lib.rs (target/release/deps/flash_tmux-7b4f06ea571d9104308d7d79af3206be)
+running 1 test
+test search::tests::search_ordering_is_reverse_across_lines_tokens_and_offsets ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 73 filtered out; finished in 0.00s
+flash.tmux main
+> RUST_BACKTRACE=1 cargo run --release -- --pane-id %17 --copy-mode-range=-80:-29
+    Finished `release` profile [optimized] target(s) in 0.02s
+     Running `target/release/flash_tmux --pane-id '%17' '--copy-mode-range=-80:-29'`
+Error: failed to capture pane in copy-mode
+Caused by:
+    0: tmux command failed: capture-pane -p -J -S -80 -E -29 -t %17
+    1: command exited with status 1: can't find pane: %17
+Stack backtrace:
+   0: anyhow::error::<impl anyhow::Error>::msg
+             at /home/user/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anyhow-1.0.104/src/error.rs:42:14
+   1: flash_tmux::tmux::tmux_output_trim
+             at /home/user/code/rust/flash.tmux/src/tmux.rs:187:9
+   2: flash_tmux::tmux::capture_pane_with_range
+             at /home/user/code/rust/flash.tmux/src/tmux.rs:149:16
+   3: flash_tmux::run_child
+             at /home/user/code/rust/flash.tmux/src/main.rs:84:24
+   4: flash_tmux::main
+             at /home/user/code/rust/flash.tmux/src/main.rs:35:9
+flash.tmux main
+> git show --stat --oneline 2a842f6
+2a842f6 perf(search): reuse normalized query storage
+ src/search.rs | 112 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--------------------------
+ 1 file changed, 100 insertions(+), 12 deletions(-)
+
+flash.tmux main
+> curl -I https://github.com/iovis/flash.tmux/releases/download/v0.4.0/flash_tmux-x86_64-unknown-linux-gnu.tar.xz
+HTTP/2 302
+location: https://release-assets.githubusercontent.com/github-production-release-asset/123456789/abcdef0123456789abcdef0123456789/flash_tmux-x86_64-unknown-linux-gnu.tar.xz
+cache-control: no-cache
+x-github-request-id: 8A1C:2E41A:2F9D0A:30C04B:66B63F14
+
+flash.tmux main
+> printf '%s\n' 'src/search.rs::SearchInterface::scan_matches' 'target/release/deps/flash_tmux-7b4f06ea571d9104308d7d79af3206be' 'résumé-with-unicode-and-a-very-long-token-that-exercises-byte-boundary-checks-without-containing-whitespace'
+src/search.rs::SearchInterface::scan_matches
+target/release/deps/flash_tmux-7b4f06ea571d9104308d7d79af3206be
+résumé-with-unicode-and-a-very-long-token-that-exercises-byte-boundary-checks-without-containing-whitespace
+
+flash.tmux main
+> git status --short --branch
+## main...origin/main
+flash.tmux main
+>

@@ -55,3 +55,21 @@ bind-key F run-shell "flash_tmux"
   match is inside those wrappers, the outer wrapper is stripped before
   copying/pasting.
   - Example: `(/home/user/project)` → `/home/user/project`
+
+## Benchmarks
+
+This historical branch keeps the application code pinned to `v0.2.2` while
+providing the same synthetic, realistic, allocation, and cold-selection
+workloads as the current `bench` branch. The benchmark binaries are adapted to
+the older owned-match search API without backporting newer product behavior.
+
+```bash
+just checksums-all
+just bench-all
+just bench-cold
+```
+
+The scaled synthetic suite is the stable historical throughput gate. The
+actual-size suite covers sparse shell output, a development session, and a wide
+copy-mode viewport without concatenating fixtures. Fixture dimensions and
+version-specific checksums are documented in `bench/realistic/README.md`.

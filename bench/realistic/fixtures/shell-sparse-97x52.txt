@@ -1,0 +1,52 @@
+flash.tmux main
+> pwd
+/home/user/code/rust/flash.tmux
+flash.tmux main
+> git status --short --branch
+## main...origin/main
+flash.tmux main
+> ls
+Cargo.lock  Cargo.toml  LICENSE  README.md  bench  src  target
+flash.tmux main
+> cargo test search_case_insensitive
+   Compiling flash_tmux v0.4.0 (/home/user/code/rust/flash.tmux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running unittests src/lib.rs (target/debug/deps/flash_tmux-a1b2c3d4)
+
+running 1 test
+test search::tests::search_case_insensitive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 73 filtered out
+
+flash.tmux main
+> git log -1 --oneline
+71f2f7b docs: update benchmark notes
+flash.tmux main
+> printf 'résumé\n'
+résumé
+flash.tmux main
+>
+ 
+ 
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
