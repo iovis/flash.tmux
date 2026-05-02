@@ -61,3 +61,39 @@ bind-key F run-shell "flash_tmux"
   match is inside those wrappers, the outer wrapper is stripped before
   copying/pasting.
   - Example: `(/home/user/project)` → `/home/user/project`
+
+## Benchmarks
+
+Standalone benchmark binaries live in `src/bin/` (on the `bench` branch) and
+are intended for comparison with the C and Go sibling implementations.
+
+Build release binaries and verify checksum parity:
+
+```bash
+just release
+just checksums
+```
+
+Expected checksum output:
+
+```text
+1787
+4278
+6728401868494091241
+```
+
+Run Rust-only benchmarks with `hyperfine`:
+
+```bash
+just bench-search
+just bench-incremental
+just bench-render
+just bench
+```
+
+The benchmark recipes use `../flash-bench-content.txt` by default and accept
+optional `copies`, `iterations`, and `runs` parameters. For example:
+
+```bash
+just bench-search 500 50 10
+```

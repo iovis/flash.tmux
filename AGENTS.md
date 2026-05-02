@@ -3,7 +3,6 @@
 Context for this repo:
 
 - Rust CLI for tmux “flash copy” workflow (inspired by flash.nvim / flash-copy.tmux).
-- Project path: `/home/david/code/rust/flash.tmux`.
 - Now a standalone CLI (not a tmux plugin).
 
 ## tmux workflow and behavior
@@ -39,6 +38,23 @@ Context for this repo:
 - `src/tmux.rs`: tmux helpers + clipboard.
 - `src/config.rs`: styling/config defaults.
 - `src/lib.rs`: module declarations.
+- `src/bin/*_bench.rs`: standalone benchmark binaries for cross-implementation comparisons. (only in `bench` branch)
+
+## Benchmarks
+
+- Only in `bench` branch.
+- Benchmark fixture: `./flash-bench-content.txt`.
+- Build release app and benchmark binaries with `just release`.
+- Verify benchmark checksum parity with `just checksums`.
+  - Expected outputs: `1787`, `4278`, `6728401868494091241`.
+- Run Rust-only hyperfine benchmarks with:
+  - `just bench-search`
+  - `just bench-incremental`
+  - `just bench-render`
+  - `just bench`
+- Benchmark recipes accept optional `copies`, `iterations`, and `runs` parameters, matching the Go and C sibling repos.
+- `hyperfine` must be installed to run benchmark recipes.
+- If `just` cannot write its runtime temp files under `/run/user/...`, run with `XDG_RUNTIME_DIR=/tmp`.
 
 ## Rust conventions
 
