@@ -63,19 +63,19 @@ impl<'a> InteractiveUI<'a> {
                         }
                         (KeyCode::Char('a'), true) | (KeyCode::Home, _) => {
                             self.cursor_pos = 0;
-                            self.display_content()?;
+                            self.move_prompt_cursor_only()?;
                         }
                         (KeyCode::Char('e'), true) | (KeyCode::End, _) => {
                             self.cursor_pos = self.search_query.len();
-                            self.display_content()?;
+                            self.move_prompt_cursor_only()?;
                         }
                         (KeyCode::Left, _) => {
                             self.cursor_pos = self.cursor_pos.saturating_sub(1);
-                            self.display_content()?;
+                            self.move_prompt_cursor_only()?;
                         }
                         (KeyCode::Right, _) if self.cursor_pos < self.search_query.len() => {
                             self.cursor_pos += 1;
-                            self.display_content()?;
+                            self.move_prompt_cursor_only()?;
                         }
                         (KeyCode::Char('u'), true) => {
                             self.cursor_pos = 0;
@@ -153,32 +153,39 @@ impl<'a> InteractiveUI<'a> {
     fn display_content(&mut self) -> Result<()> {
         let mut out = io::stderr();
         let available_height = Self::visible_line_limit();
-        let height = available_height.saturating_add(1);
 
         out.sync_update(|out| -> io::Result<()> {
             out.queue(Hide)?;
             out.queue(MoveTo(0, 0))?;
-            out.queue(Clear(ClearType::FromCursorDown))?;
-
-            self.display_pane_content(out, available_height)?;
+            self.write_pane_content_then_clear(out, available_height)?;
 
             let prompt = self.build_search_bar_output();
-            let prompt_row = u16::try_from(height.saturating_sub(1)).unwrap_or(u16::MAX);
-            out.queue(MoveTo(0, prompt_row))?;
-            out.write_all(prompt.as_bytes())?;
+            let prompt_row = Self::prompt_row(available_height);
+            Self::write_prompt(out, prompt_row, &prompt)?;
 
-            let cursor_col =
-                u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX);
-            out.queue(MoveTo(cursor_col, prompt_row))?;
+            let cursor_col = self.prompt_cursor_move_column();
+            Self::queue_prompt_cursor(out, prompt_row, cursor_col)?;
             out.queue(Show)?;
             Ok(())
         })??;
         Ok(())
     }
 
+    fn move_prompt_cursor_only(&self) -> Result<()> {
+        let mut out = io::stderr();
+        let prompt_row = Self::prompt_row(Self::visible_line_limit());
+        let cursor_col = self.prompt_cursor_move_column();
+        Self::write_prompt_cursor(&mut out, prompt_row, cursor_col)?;
+        Ok(())
+    }
+
     fn visible_line_limit() -> usize {
         let (_, height) = terminal::size().unwrap_or((80, 40));
         (height as usize).saturating_sub(1)
+    }
+
+    fn prompt_row(available_height: usize) -> u16 {
+        u16::try_from(available_height).unwrap_or(u16::MAX)
     }
 
     fn prompt_cursor_column(&self) -> usize {
@@ -190,9 +197,23 @@ impl<'a> InteractiveUI<'a> {
         col
     }
 
-    fn display_pane_content(
+    fn prompt_cursor_move_column(&self) -> u16 {
+        u16::try_from(self.prompt_cursor_column().saturating_sub(1)).unwrap_or(u16::MAX)
+    }
+
+    fn write_pane_content_then_clear<W: Write>(
         &mut self,
-        out: &mut io::Stderr,
+        out: &mut W,
+        available_height: usize,
+    ) -> io::Result<()> {
+        self.display_pane_content(out, available_height)?;
+        out.queue(Clear(ClearType::FromCursorDown))?;
+        Ok(())
+    }
+
+    fn display_pane_content<W: Write>(
+        &mut self,
+        out: &mut W,
         available_height: usize,
     ) -> io::Result<()> {
         let total_lines = self.search.lines.len().min(available_height);
@@ -210,15 +231,47 @@ impl<'a> InteractiveUI<'a> {
             let is_last_line = line_idx + 1 == total_lines;
 
             let output = scratch.render_line_with_matches(line, matches, config, current_match);
-
-            if is_last_line {
-                out.write_all(output.as_bytes())?;
-            } else {
-                out.write_all(output.as_bytes())?;
-                out.write_all(b"\r\n")?;
-            }
+            Self::write_rendered_pane_line(out, output, is_last_line)?;
         }
 
+        Ok(())
+    }
+
+    fn write_rendered_pane_line<W: Write>(
+        out: &mut W,
+        output: &str,
+        is_last_line: bool,
+    ) -> io::Result<()> {
+        out.write_all(output.as_bytes())?;
+        out.queue(Clear(ClearType::UntilNewLine))?;
+        if !is_last_line {
+            out.write_all(b"\r\n")?;
+        }
+        Ok(())
+    }
+
+    fn write_prompt<W: Write>(out: &mut W, prompt_row: u16, prompt: &str) -> io::Result<()> {
+        out.queue(MoveTo(0, prompt_row))?;
+        out.write_all(prompt.as_bytes())?;
+        out.queue(Clear(ClearType::UntilNewLine))?;
+        Ok(())
+    }
+
+    fn write_prompt_cursor<W: Write>(
+        out: &mut W,
+        prompt_row: u16,
+        cursor_col: u16,
+    ) -> io::Result<()> {
+        Self::queue_prompt_cursor(out, prompt_row, cursor_col)?;
+        out.flush()
+    }
+
+    fn queue_prompt_cursor<W: Write>(
+        out: &mut W,
+        prompt_row: u16,
+        cursor_col: u16,
+    ) -> io::Result<()> {
+        out.queue(MoveTo(cursor_col, prompt_row))?;
         Ok(())
     }
 
@@ -891,5 +944,100 @@ mod tests {
         let result = ui.build_search_bar_output();
         let expected = format!("{} hello", c.prompt_style.apply(&c.prompt_indicator));
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn pane_content_clear_is_delayed_until_after_content() {
+        let c = cfg();
+        let mut ui = InteractiveUI {
+            search: SearchInterface::new("alpha\nbeta", c.label_characters.clone()),
+            render_scratch: RenderScratch::new(),
+            search_query: String::new(),
+            cursor_pos: 0,
+            config: c,
+        };
+        let mut out = Vec::new();
+
+        ui.write_pane_content_then_clear(&mut out, 2)
+            .expect("pane content should write");
+
+        let output = String::from_utf8(out).expect("terminal output should be UTF-8");
+        let first_content = output.find("alpha").expect("content should be written");
+        let delayed_clear = output
+            .find("\x1b[J")
+            .expect("delayed clear should be written");
+
+        assert!(delayed_clear > first_content);
+        assert!(!output[..first_content].contains("\x1b[J"));
+        assert!(output.contains("\r\n"));
+    }
+
+    #[test]
+    fn rendered_pane_line_clears_tail_after_content() {
+        let mut out = Vec::new();
+
+        InteractiveUI::write_rendered_pane_line(&mut out, "short", false)
+            .expect("rendered line should write");
+
+        let output = String::from_utf8(out).expect("terminal output should be UTF-8");
+        let content = output
+            .find("short")
+            .expect("line content should be written");
+        let tail_clear = output
+            .find("\x1b[K")
+            .expect("line tail clear should be written");
+        let newline = output
+            .find("\r\n")
+            .expect("line separator should be written");
+
+        assert!(content < tail_clear);
+        assert!(tail_clear < newline);
+    }
+
+    #[test]
+    fn prompt_write_clears_tail_after_prompt() {
+        let mut out = Vec::new();
+
+        InteractiveUI::write_prompt(&mut out, 4, "prompt").expect("prompt should write");
+
+        let output = String::from_utf8(out).expect("terminal output should be UTF-8");
+        let prompt = output.find("prompt").expect("prompt should be written");
+        let tail_clear = output
+            .find("\x1b[K")
+            .expect("prompt tail clear should be written");
+
+        assert!(output.contains("\x1b[5;1H"));
+        assert!(prompt < tail_clear);
+    }
+
+    #[test]
+    fn prompt_cursor_write_moves_without_clearing() {
+        let mut out = Vec::new();
+
+        InteractiveUI::write_prompt_cursor(&mut out, 4, 2).expect("prompt cursor should move");
+
+        let output = String::from_utf8(out).expect("terminal output should be UTF-8");
+
+        assert!(output.contains("\x1b[5;3H"));
+        assert!(!output.contains("\x1b[J"));
+        assert!(!output.contains("\x1b[K"));
+    }
+
+    #[test]
+    fn prompt_cursor_move_column_tracks_query_cursor() {
+        let c = cfg();
+        let ui = InteractiveUI {
+            search: SearchInterface::new("", c.label_characters.clone()),
+            render_scratch: RenderScratch::new(),
+            search_query: "hello".to_string(),
+            cursor_pos: 2,
+            config: c.clone(),
+        };
+
+        let expected =
+            UnicodeWidthStr::width(c.prompt_indicator.as_str()) + 2 + UnicodeWidthStr::width("he")
+                - 1;
+
+        assert_eq!(usize::from(ui.prompt_cursor_move_column()), expected);
     }
 }
