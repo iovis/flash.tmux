@@ -189,14 +189,25 @@ impl<'a> SearchInterface<'a> {
                 continue;
             }
 
-            for match_pos in (0..=token_bytes.len() - query_len).rev() {
-                if !token_bytes[match_pos].eq_ignore_ascii_case(&first_query_byte)
-                    || !is_utf8_boundary(token_bytes, match_pos)
-                    || !is_utf8_boundary(token_bytes, match_pos + query_len)
-                    || !ascii_case_insensitive_eq(
-                        &token_bytes[match_pos..match_pos + query_len],
-                        query_bytes,
+            let mut match_pos = token_bytes.len() - query_len + 1;
+            while match_pos > 0 {
+                match_pos -= 1;
+
+                if ascii_lower_byte(token_bytes[match_pos]) != first_query_byte {
+                    continue;
+                }
+
+                if query_len > 1
+                    && !ascii_case_insensitive_eq_lower(
+                        &token_bytes[match_pos + 1..match_pos + query_len],
+                        &query_bytes[1..],
                     )
+                {
+                    continue;
+                }
+
+                if !is_utf8_boundary(token_bytes, match_pos)
+                    || !is_utf8_boundary(token_bytes, match_pos + query_len)
                 {
                     continue;
                 }
@@ -222,10 +233,10 @@ impl<'a> SearchInterface<'a> {
                 return false;
             }
 
-            token_bytes[candidate.match_start + previous_query_len..extended_end]
-                .iter()
-                .zip(&query_bytes[previous_query_len..])
-                .all(|(token_byte, query_byte)| token_byte.eq_ignore_ascii_case(query_byte))
+            ascii_case_insensitive_eq_lower(
+                &token_bytes[candidate.match_start + previous_query_len..extended_end],
+                &query_bytes[previous_query_len..],
+            )
         });
 
         for candidate in &mut self.matches {
@@ -349,13 +360,21 @@ fn is_utf8_boundary(text: &[u8], idx: usize) -> bool {
     idx == 0 || idx >= text.len() || (text[idx] & 0b1100_0000) != 0b1000_0000
 }
 
-fn ascii_case_insensitive_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
+fn ascii_lower_byte(byte: u8) -> u8 {
+    if byte.is_ascii_uppercase() {
+        byte + (b'a' - b'A')
+    } else {
+        byte
+    }
+}
+
+fn ascii_case_insensitive_eq_lower(left: &[u8], right_lower: &[u8]) -> bool {
+    if left.len() != right_lower.len() {
         return false;
     }
     left.iter()
-        .zip(right)
-        .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        .zip(right_lower)
+        .all(|(left_byte, right_byte)| ascii_lower_byte(*left_byte) == *right_byte)
 }
 
 fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &str) {
@@ -479,6 +498,15 @@ mod tests {
     }
 
     #[test]
+    fn search_folds_ascii_suffix_but_not_non_ascii_prefix() {
+        let mut search = SearchInterface::new("éA éa ÉA Éa", default_labels());
+        let matches = search.search("éa");
+        let texts: Vec<_> = matches.iter().map(|m| m.text).collect();
+
+        assert_eq!(texts, vec!["éa", "éA"]);
+    }
+
+    #[test]
     fn search_ordering_is_reverse() {
         let mut search = SearchInterface::new("abc abc", default_labels());
         let matches = search.search("a");
@@ -510,6 +538,15 @@ mod tests {
     }
 
     #[test]
+    fn search_ordering_is_reverse_for_overlapping_offsets() {
+        let mut search = SearchInterface::new("aaaa", default_labels());
+        let matches = search.search("aa");
+        let starts: Vec<_> = matches.iter().map(|m| m.match_start).collect();
+
+        assert_eq!(starts, vec![2, 1, 0]);
+    }
+
+    #[test]
     fn search_does_not_emit_duplicate_matches() {
         let mut search = SearchInterface::new("abc abc abc", default_labels());
         let matches = search.search("a");
@@ -524,6 +561,18 @@ mod tests {
                         || left.text.len() != right.text.len()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn search_matches_keep_utf8_boundaries() {
+        let mut search = SearchInterface::new("aé café ÉA éa", default_labels());
+        let matches = search.search("é");
+
+        assert_eq!(matches.len(), 3);
+        for m in matches {
+            assert!(m.text.is_char_boundary(m.match_start));
+            assert!(m.text.is_char_boundary(m.match_end));
         }
     }
 
@@ -562,6 +611,27 @@ mod tests {
             assert_eq!(left.match_end, right.match_end);
             assert_eq!(left.label, right.label);
         }
+    }
+
+    #[test]
+    fn search_refines_utf8_query_like_fresh_scan() {
+        let pane = "éA alpha\nbeta éa ÉA";
+        let mut refined = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        refined.search("é");
+        let refined_matches: Vec<_> = refined
+            .search("éa")
+            .iter()
+            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .collect();
+        let fresh_matches: Vec<_> = fresh
+            .search("éa")
+            .iter()
+            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .collect();
+
+        assert_eq!(refined_matches, fresh_matches);
     }
 
     #[test]
