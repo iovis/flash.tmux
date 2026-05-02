@@ -27,6 +27,30 @@ struct LabelCandidate {
     lower: u8,
 }
 
+#[derive(Clone, Copy)]
+struct QueryByteMatcher {
+    lower: u8,
+    upper: u8,
+}
+
+impl QueryByteMatcher {
+    fn new(query_lower: u8) -> Self {
+        let upper = if query_lower.is_ascii_lowercase() {
+            query_lower - (b'a' - b'A')
+        } else {
+            query_lower
+        };
+        Self {
+            lower: query_lower,
+            upper,
+        }
+    }
+
+    fn matches(self, byte: u8) -> bool {
+        byte == self.lower || byte == self.upper
+    }
+}
+
 #[derive(Debug)]
 pub struct SearchInterface<'a> {
     pub lines: Vec<&'a str>,
@@ -181,7 +205,7 @@ impl<'a> SearchInterface<'a> {
     }
 
     fn scan_matches(&mut self, query_bytes: &[u8], query_len: usize) {
-        let first_query_byte = query_bytes[0];
+        let first_query_byte = QueryByteMatcher::new(query_bytes[0]);
 
         for token in self.tokens.iter().rev() {
             let token_bytes = token.text.as_bytes();
@@ -193,7 +217,7 @@ impl<'a> SearchInterface<'a> {
             while match_pos > 0 {
                 match_pos -= 1;
 
-                if ascii_lower_byte(token_bytes[match_pos]) != first_query_byte {
+                if !first_query_byte.matches(token_bytes[match_pos]) {
                     continue;
                 }
 
@@ -372,9 +396,15 @@ fn ascii_case_insensitive_eq_lower(left: &[u8], right_lower: &[u8]) -> bool {
     if left.len() != right_lower.len() {
         return false;
     }
-    left.iter()
-        .zip(right_lower)
-        .all(|(left_byte, right_byte)| ascii_lower_byte(*left_byte) == *right_byte)
+
+    let mut idx = 0usize;
+    while idx < left.len() {
+        if !QueryByteMatcher::new(right_lower[idx]).matches(left[idx]) {
+            return false;
+        }
+        idx += 1;
+    }
+    true
 }
 
 fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &str) {
@@ -393,13 +423,13 @@ fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &st
 
     for m in matches.iter() {
         if m.match_end < m.text.len() {
-            let next = m.text.as_bytes()[m.match_end].to_ascii_lowercase();
+            let next = ascii_lower_byte(m.text.as_bytes()[m.match_end]);
             continuation_chars[usize::from(next)] = true;
         }
     }
 
     for label in label_chars.bytes() {
-        let lower = label.to_ascii_lowercase();
+        let lower = ascii_lower_byte(label);
         if query_chars[usize::from(lower)] || continuation_chars[usize::from(lower)] {
             continue;
         }
@@ -419,7 +449,7 @@ fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &st
         if cached_token != Some(token_id) {
             token_chars.fill(false);
             for byte in m.text.bytes() {
-                token_chars[usize::from(byte.to_ascii_lowercase())] = true;
+                token_chars[usize::from(ascii_lower_byte(byte))] = true;
             }
             cached_token = Some(token_id);
         }
@@ -450,6 +480,21 @@ mod tests {
 
     fn default_trimmable() -> String {
         Config::defaults().trimmable_chars
+    }
+
+    #[test]
+    fn query_byte_matcher_matches_ascii_lower_equivalence() {
+        for query_byte in 0u8..=u8::MAX {
+            let query_lower = ascii_lower_byte(query_byte);
+            let matcher = QueryByteMatcher::new(query_lower);
+            for token_byte in 0u8..=u8::MAX {
+                assert_eq!(
+                    matcher.matches(token_byte),
+                    ascii_lower_byte(token_byte) == query_lower,
+                    "query_byte={query_byte} token_byte={token_byte}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -697,6 +742,31 @@ mod tests {
                 .expect("expected label to be assigned for test match");
             assert!(!"abc".contains(label));
         }
+    }
+
+    #[test]
+    fn labels_avoid_continuation_chars() {
+        let mut search = SearchInterface::new("fooj foo", default_labels());
+        let matches = search.search("foo");
+
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|m| m.label != Some('j')));
+    }
+
+    #[test]
+    fn uppercase_and_lowercase_configured_labels_are_distinct() {
+        let mut search = SearchInterface::new("x x", "aA".to_string());
+        let labels: Vec<_> = search.search("x").iter().map(|m| m.label).collect();
+
+        assert_eq!(labels, vec![Some('a'), Some('A')]);
+    }
+
+    #[test]
+    fn token_local_label_rejection_is_not_global() {
+        let mut search = SearchInterface::new("x jx", "jk".to_string());
+        let labels: Vec<_> = search.search("x").iter().map(|m| m.label).collect();
+
+        assert_eq!(labels, vec![Some('k'), Some('j')]);
     }
 
     #[test]
