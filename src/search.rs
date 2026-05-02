@@ -33,6 +33,25 @@ struct QueryByteMatcher {
     upper: u8,
 }
 
+const ASCII_LOWER_BYTES: [u8; 256] = build_ascii_lower_bytes();
+
+const fn build_ascii_lower_bytes() -> [u8; 256] {
+    let mut bytes = [0; 256];
+    let mut byte = 0u8;
+    loop {
+        bytes[byte as usize] = if byte >= b'A' && byte <= b'Z' {
+            byte + (b'a' - b'A')
+        } else {
+            byte
+        };
+        if byte == u8::MAX {
+            break;
+        }
+        byte += 1;
+    }
+    bytes
+}
+
 impl QueryByteMatcher {
     fn new(query_lower: u8) -> Self {
         let upper = if query_lower.is_ascii_lowercase() {
@@ -385,11 +404,7 @@ fn is_utf8_boundary(text: &[u8], idx: usize) -> bool {
 }
 
 fn ascii_lower_byte(byte: u8) -> u8 {
-    if byte.is_ascii_uppercase() {
-        byte + (b'a' - b'A')
-    } else {
-        byte
-    }
+    ASCII_LOWER_BYTES[usize::from(byte)]
 }
 
 fn ascii_case_insensitive_eq_lower(left: &[u8], right_lower: &[u8]) -> bool {
@@ -759,6 +774,14 @@ mod tests {
         let labels: Vec<_> = search.search("x").iter().map(|m| m.label).collect();
 
         assert_eq!(labels, vec![Some('a'), Some('A')]);
+    }
+
+    #[test]
+    fn duplicate_configured_labels_are_used_once() {
+        let mut search = SearchInterface::new("x x x", "aab".to_string());
+        let labels: Vec<_> = search.search("x").iter().map(|m| m.label).collect();
+
+        assert_eq!(labels, vec![Some('a'), Some('b'), None]);
     }
 
     #[test]
