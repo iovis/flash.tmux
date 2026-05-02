@@ -44,7 +44,9 @@ Context for this repo:
 ## Benchmarks
 
 - Only in `bench` branch.
-- Benchmark fixture: `./flash-bench-content.txt`.
+- Scaled synthetic fixture: `../flash-bench-content.txt`.
+- Actual-size realistic fixtures and their dimensions/checksums are documented
+  in `bench/realistic/README.md`.
 - Build release app and benchmark binaries with `just release`.
 - Verify benchmark checksum parity with `just checksums`.
   - Expected outputs: `1787`, `4278`, `5838609766282676217`.
@@ -53,7 +55,22 @@ Context for this repo:
   - `just bench-incremental`
   - `just bench-render`
   - `just bench`
-- Benchmark recipes accept optional `copies`, `iterations`, and `runs` parameters, matching the Go and C sibling repos.
+- Run the separate realistic suite with:
+  - `just checksums-realistic`
+  - `just bench-realistic-search`
+  - `just bench-realistic-incremental`
+  - `just bench-realistic-render`
+  - `just bench-realistic`
+- `just checksums-all` and `just bench-all` run both suites.
+- `just measure-realistic-allocations` reports search allocations after one
+  warmup edit trace; pass an iteration count to measure repeated traces.
+- Benchmark recipes accept optional `copies`, `iterations`, and `runs`
+  parameters, matching the C and Odin sibling repos.
+- Realistic recipes accept optional `iterations` and `runs` parameters. They
+  repeat query traces in process but never multiply fixture contents.
+- Use `just bench-all` for optimization decisions. Treat the three realistic
+  scenarios as the primary profiling workloads and retain the synthetic suite
+  as a historical throughput and checksum regression gate.
 - `hyperfine` must be installed to run benchmark recipes.
 - If `just` cannot write its runtime temp files under `/run/user/...`, run with `XDG_RUNTIME_DIR=/tmp`.
 

@@ -105,3 +105,23 @@ optional `copies`, `iterations`, and `runs` parameters. For example:
 ```bash
 just bench-search 500 50 10
 ```
+
+The scaled synthetic suite is intended for stable throughput and regression
+comparisons. A separate actual-size suite covers sparse shell output, a
+development session, and a wide copy-mode viewport without concatenating the
+fixtures:
+
+```bash
+just checksums-realistic
+just bench-realistic
+```
+
+The realistic plain-search benchmark performs full scans. Its incremental and
+render benchmarks replay query edits over persistent search state and render 51
+content rows. Fixture dimensions, distributions, and checksums are documented
+in `bench/realistic/README.md`.
+
+Use `just bench-all` when evaluating an optimization. Treat the realistic
+scenarios as the primary performance and profiling workloads, reported
+separately so sparse-pane regressions remain visible. Keep the scaled synthetic
+suite as a stable historical throughput and checksum regression test.

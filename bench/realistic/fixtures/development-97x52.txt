@@ -1,0 +1,52 @@
+flash.tmux main
+> cargo test
+   Compiling unicode-width v0.2.2
+   Compiling crossterm v0.29.0
+   Compiling flash_tmux v0.4.0 (/home/user/code/rust/flash.tmux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.84s
+     Running unittests src/lib.rs (target/debug/deps/flash_tmux-7d41022b6b36a781)
+test search::tests::query_byte_matcher_matches_ascii_lower_equivalence ... ok; test search::tests::search_handles_long_ascii_queries ... ok
+running 74 tests
+test config::tests::defaults_use_expected_label_characters ... ok
+test search::tests::search_case_insensitive ... ok
+test search::tests::search_ordering_is_reverse_across_lines_tokens_and_offsets ... ok
+test search::tests::identical_trimmed_selections_reuse_label ... ok
+test search::tests::search_refines_utf8_query_like_fresh_scan ... ok
+test tmux::tests::parse_current_pane_info_handles_copy_mode_range ... ok
+test ui::tests::delayed_clear_follows_rendered_content ... ok
+test ui::tests::render_line_places_label_after_match ... ok
+test ui::tests::render_line_preserves_utf8_boundaries ... ok
+test search::tests::search_ordering_is_reverse_for_overlapping_offsets ... ok; test search::tests::search_does_not_emit_duplicate_matches ... ok
+test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Doc-tests flash_tmux: test src/search.rs - search::SearchInterface (line 76) ... ok
+     Running unittests src/main.rs (target/debug/deps/flash_tmux-9e2a06d786b338de)
+running tests from /home/user/code/rust/flash.tmux/target/debug/deps/flash_tmux-9e2a06d786b338de with RUST_BACKTRACE=1
+running 3 tests
+test tests::parse_copy_mode_range_accepts_negative_start ... ok
+test tests::parse_copy_mode_range_rejects_missing_bound ... ok
+test tests::parse_copy_mode_range_rejects_unexpected_separator ... ok
+test tests::parse_copy_mode_range_rejects_overflowing_start_and_reports_context ... ok; test tests::parse_copy_mode_range_accepts_zero ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+     Running tests/search_workflows.rs (target/debug/deps/search_workflows-37d37c66d0b8e32a)
+flash.tmux main
+> cargo clippy -- -W clippy::pedantic -A clippy::missing-errors-doc -A clippy::missing-panics-doc
+    Checking flash_tmux v0.4.0 (/home/user/code/rust/flash.tmux)
+warning: this function has too many lines (112/100)
+  --> src/search.rs:276:5
+   |
+276 |     fn scan_matches(&mut self, query_bytes: &[u8], query_len: usize) {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_lines
+warning: `flash_tmux` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.31s
+note: the full diagnostic is available in /home/user/code/rust/flash.tmux/target/debug/.fingerprint/flash_tmux-44a70b983ff7f9d1/output-lib-flash_tmux
+flash.tmux main
+> git status --short --branch
+## main...origin/main
+ M src/search.rs
+?? bench/realistic/fixtures/development-97x52.txt
+flash.tmux main
+> rg -n "SearchInterface|SearchMatch" src/search.rs src/ui.rs
+src/search.rs:76:pub struct SearchInterface<'a> {
+src/search.rs:82:    matches: Vec<SearchMatch<'a>>,
+src/ui.rs:220:    fn render_frame(&mut self, search: &SearchInterface<'_>, query: &str) -> Result<()> {
