@@ -11,6 +11,10 @@ labeled keys.
 
 - tmux with `display-popup` support.
 - Clipboard support via tmux `set-buffer -w` (OSC52-capable terminal).
+- tmux 3.7 or newer is recommended for
+  [synchronized output](https://github.com/contour-terminal/vt-extensions/blob/1a9fde53d80c4a60b1be44c5a4492d86ec9f9cce/synchronized-output.md)
+  (also called synchronized updates or batched rendering). Older versions still
+  work but may show some flicker while updating search results.
 
 ## Install
 
