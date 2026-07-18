@@ -34,6 +34,7 @@ struct QueryByteMatcher {
 }
 
 const ASCII_LOWER_BYTES: [u8; 256] = build_ascii_lower_bytes();
+const QUERY_STACK_CAPACITY: usize = 256;
 
 const fn build_ascii_lower_bytes() -> [u8; 256] {
     let mut bytes = [0; 256];
@@ -109,16 +110,31 @@ impl<'a> SearchInterface<'a> {
             return &self.matches;
         }
 
-        let query_cmp = query.to_ascii_lowercase();
+        let previous_query_len = self.last_query.len();
+        let mut previous_query_stack = [0u8; QUERY_STACK_CAPACITY];
+        let previous_query_heap;
+        let previous_query = if previous_query_len <= QUERY_STACK_CAPACITY {
+            let previous_query = &mut previous_query_stack[..previous_query_len];
+            previous_query.copy_from_slice(self.last_query.as_bytes());
+            &*previous_query
+        } else {
+            previous_query_heap = self.last_query.as_bytes().to_vec();
+            &previous_query_heap
+        };
+
+        let mut query_cmp = std::mem::take(&mut self.last_query);
+        query_cmp.clear();
+        query_cmp.push_str(query);
+        query_cmp.make_ascii_lowercase();
         let query_bytes = query_cmp.as_bytes();
         let query_len = query_bytes.len();
 
-        if !self.last_query.is_empty() && query_cmp.starts_with(&self.last_query) {
-            if query_len > self.last_query.len() {
-                self.store_snapshot();
+        if !previous_query.is_empty() && query_bytes.starts_with(previous_query) {
+            if query_len > previous_query_len {
+                self.store_snapshot(previous_query);
             }
-            self.refine_matches(query_bytes, self.last_query.len());
-        } else if self.last_query.starts_with(&query_cmp) && self.restore_snapshot(&query_cmp) {
+            self.refine_matches(query_bytes, previous_query_len);
+        } else if previous_query.starts_with(query_bytes) && self.restore_snapshot(query_bytes) {
             // Snapshot restored; labels and line ranges are rebuilt below.
         } else {
             self.snapshots.clear();
@@ -134,31 +150,33 @@ impl<'a> SearchInterface<'a> {
         &self.matches
     }
 
-    fn store_snapshot(&mut self) {
-        if self.last_query.is_empty() {
+    fn store_snapshot(&mut self, query: &[u8]) {
+        if query.is_empty() {
             return;
         }
 
         if let Some(snapshot) = self
             .snapshots
             .iter_mut()
-            .find(|snapshot| snapshot.query == self.last_query)
+            .find(|snapshot| snapshot.query.as_bytes() == query)
         {
             snapshot.matches.clone_from(&self.matches);
             return;
         }
 
+        let query = std::str::from_utf8(query)
+            .expect("the previous normalized query must remain valid UTF-8");
         self.snapshots.push(SearchSnapshot {
-            query: self.last_query.clone(),
+            query: query.to_owned(),
             matches: self.matches.clone(),
         });
     }
 
-    fn restore_snapshot(&mut self, query: &str) -> bool {
+    fn restore_snapshot(&mut self, query: &[u8]) -> bool {
         let Some(snapshot) = self
             .snapshots
             .iter()
-            .find(|snapshot| snapshot.query == query)
+            .find(|snapshot| snapshot.query.as_bytes() == query)
         else {
             return false;
         };
@@ -567,6 +585,51 @@ mod tests {
     }
 
     #[test]
+    fn search_handles_long_ascii_queries() {
+        for query_len in [256, 257] {
+            let query = "A".repeat(query_len);
+            let pane = "a".repeat(query_len);
+            let mut search = SearchInterface::new(&pane, default_labels());
+
+            let matches = search.search(&query);
+
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].match_start, 0);
+            assert_eq!(matches[0].match_end, query_len);
+            assert_eq!(search.last_query, pane);
+        }
+    }
+
+    #[test]
+    fn search_long_query_preserves_utf8_and_ascii_folding() {
+        let prefix = "é".repeat(128);
+        let query = format!("{prefix}A");
+        let pane = format!("{prefix}a");
+        assert_eq!(query.len(), 257);
+        let mut search = SearchInterface::new(&pane, default_labels());
+
+        let matches = search.search(&query);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].match_start, 0);
+        assert_eq!(matches[0].match_end, query.len());
+        assert_eq!(search.last_query, pane);
+    }
+
+    #[test]
+    fn search_reuses_last_query_buffer() {
+        let mut search = SearchInterface::new("alpha alphabet", default_labels());
+        search.search("Alphabet");
+        let query_ptr = search.last_query.as_ptr();
+        let query_capacity = search.last_query.capacity();
+
+        search.search("Al");
+
+        assert_eq!(search.last_query.as_ptr(), query_ptr);
+        assert_eq!(search.last_query.capacity(), query_capacity);
+    }
+
+    #[test]
     fn search_ordering_is_reverse() {
         let mut search = SearchInterface::new("abc abc", default_labels());
         let matches = search.search("a");
@@ -715,6 +778,31 @@ mod tests {
             .collect();
 
         assert_eq!(incremental.snapshots.len(), 2);
+        assert_eq!(restored_matches, fresh_matches);
+    }
+
+    #[test]
+    fn search_restores_snapshot_for_long_query() {
+        let shorter_query = "A".repeat(256);
+        let longer_query = format!("{shorter_query}B");
+        let pane = longer_query.to_ascii_lowercase();
+        let mut incremental = SearchInterface::new(&pane, default_labels());
+        let mut fresh = SearchInterface::new(&pane, default_labels());
+
+        incremental.search(&shorter_query);
+        incremental.search(&longer_query);
+        let restored_matches: Vec<_> = incremental
+            .search(&shorter_query)
+            .iter()
+            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .collect();
+        let fresh_matches: Vec<_> = fresh
+            .search(&shorter_query)
+            .iter()
+            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .collect();
+
+        assert_eq!(incremental.snapshots.len(), 1);
         assert_eq!(restored_matches, fresh_matches);
     }
 
