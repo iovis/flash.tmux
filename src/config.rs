@@ -6,6 +6,8 @@ const BASE_TEXT_COLOR: Color = Color::Rgb {
     b: 148,
 };
 
+pub const DEFAULT_TRIMMABLE_CHARS: &str = "()[]{}\"'`,.:;";
+
 #[derive(Clone)]
 pub struct Config {
     pub prompt_placeholder_text: String,
@@ -48,7 +50,7 @@ impl Config {
             prompt_placeholder_text: "search...".to_string(),
             prompt_indicator: "❯".to_string(),
             label_characters: "jklhgfdsauiopytrewqnmvbcxz".to_string(),
-            trimmable_chars: "()[]{}\"'`,.:;".to_string(),
+            trimmable_chars: DEFAULT_TRIMMABLE_CHARS.to_string(),
             label_action_mode: LabelActionMode::Default,
             highlight_style,
             current_style,
