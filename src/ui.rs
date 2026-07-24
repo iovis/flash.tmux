@@ -35,7 +35,9 @@ impl SelectedText {
 impl<'a> InteractiveUI<'a> {
     pub fn new(pane_content: &'a str, config: Config) -> Self {
         let label_chars = config.label_characters.clone();
-        let search = SearchInterface::new(pane_content, label_chars);
+        let trimmable_chars = config.trimmable_chars.clone();
+        let search =
+            SearchInterface::new_with_trimmable_chars(pane_content, label_chars, trimmable_chars);
 
         Self {
             config,
@@ -582,6 +584,7 @@ mod tests {
             line,
             col,
             label: lbl,
+            token_index: 0,
             match_start,
             match_end,
         }

@@ -4,6 +4,7 @@ pub struct SearchMatch<'a> {
     pub line: usize,
     pub col: usize,
     pub label: Option<char>,
+    pub token_index: u32,
     pub match_start: usize,
     pub match_end: usize,
 }
@@ -11,6 +12,8 @@ pub struct SearchMatch<'a> {
 #[derive(Clone, Copy, Debug)]
 struct SearchToken<'a> {
     text: &'a str,
+    selection: &'a str,
+    selection_group: usize,
     line: usize,
     col: usize,
 }
@@ -25,6 +28,12 @@ struct SearchSnapshot<'a> {
 struct LabelCandidate {
     label: u8,
     lower: u8,
+}
+
+#[derive(Clone, Copy)]
+struct LabeledSelection<'a> {
+    text: &'a str,
+    label: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -79,14 +88,28 @@ pub struct SearchInterface<'a> {
     snapshots: Vec<SearchSnapshot<'a>>,
     line_match_ranges: Vec<(usize, usize)>,
     label_match_indices: [Option<usize>; 256],
+    selection_group_labels: Vec<Option<u8>>,
     label_chars: String,
+    trimmable_chars: String,
     last_query: String,
 }
 
 impl<'a> SearchInterface<'a> {
     pub fn new(pane_content: &'a str, label_chars: String) -> Self {
+        Self::new_with_trimmable_chars(
+            pane_content,
+            label_chars,
+            crate::config::DEFAULT_TRIMMABLE_CHARS.to_string(),
+        )
+    }
+
+    pub fn new_with_trimmable_chars(
+        pane_content: &'a str,
+        label_chars: String,
+        trimmable_chars: String,
+    ) -> Self {
         let lines: Vec<&str> = pane_content.split('\n').collect();
-        let tokens = build_tokens(&lines);
+        let (tokens, selection_group_count) = build_tokens(&lines, &trimmable_chars);
         let line_match_ranges = vec![(0, 0); lines.len()];
         Self {
             lines,
@@ -95,7 +118,9 @@ impl<'a> SearchInterface<'a> {
             snapshots: Vec::new(),
             line_match_ranges,
             label_match_indices: [None; 256],
+            selection_group_labels: vec![None; selection_group_count],
             label_chars,
+            trimmable_chars,
             last_query: String::new(),
         }
     }
@@ -142,7 +167,14 @@ impl<'a> SearchInterface<'a> {
             self.scan_matches(query_bytes, query_len);
         }
 
-        assign_labels(&mut self.matches, query_bytes, &self.label_chars);
+        assign_labels(
+            &mut self.matches,
+            &self.tokens,
+            &mut self.selection_group_labels,
+            query_bytes,
+            &self.label_chars,
+            &self.trimmable_chars,
+        );
         self.rebuild_label_match_indices();
         self.rebuild_line_match_ranges();
         self.last_query = query_cmp;
@@ -218,7 +250,10 @@ impl<'a> SearchInterface<'a> {
             if let Some(label) = m.label
                 && label.is_ascii()
             {
-                self.label_match_indices[usize::from(label as u8)] = Some(idx);
+                let slot = &mut self.label_match_indices[usize::from(label as u8)];
+                if slot.is_none() {
+                    *slot = Some(idx);
+                }
             }
         }
     }
@@ -244,7 +279,7 @@ impl<'a> SearchInterface<'a> {
     fn scan_matches(&mut self, query_bytes: &[u8], query_len: usize) {
         let first_query_byte = QueryByteMatcher::new(query_bytes[0]);
 
-        for token in self.tokens.iter().rev() {
+        for (token_index, token) in self.tokens.iter().enumerate().rev() {
             let token_bytes = token.text.as_bytes();
             if query_len > token_bytes.len() {
                 continue;
@@ -273,11 +308,14 @@ impl<'a> SearchInterface<'a> {
                     continue;
                 }
 
+                let token_index = u32::try_from(token_index)
+                    .expect("pane content contains too many search tokens");
                 let candidate = SearchMatch {
                     text: token.text,
                     line: token.line,
                     col: token.col,
                     label: None,
+                    token_index,
                     match_start: match_pos,
                     match_end: match_pos + query_len,
                 };
@@ -306,7 +344,8 @@ impl<'a> SearchInterface<'a> {
     }
 }
 
-fn build_tokens<'a>(lines: &[&'a str]) -> Vec<SearchToken<'a>> {
+fn build_tokens<'a>(lines: &[&'a str], trimmable_chars: &str) -> (Vec<SearchToken<'a>>, usize) {
+    let mut selection_groups = std::collections::HashMap::new();
     let mut tokens = Vec::new();
 
     for (line_idx, line) in lines.iter().copied().enumerate() {
@@ -326,15 +365,21 @@ fn build_tokens<'a>(lines: &[&'a str]) -> Vec<SearchToken<'a>> {
                 idx += 1;
             }
 
+            let text = &line[token_start..idx];
+            let selection = trim_token(text, trimmable_chars);
+            let next_group = selection_groups.len();
+            let selection_group = *selection_groups.entry(selection).or_insert(next_group);
             tokens.push(SearchToken {
-                text: &line[token_start..idx],
+                text,
+                selection,
+                selection_group,
                 line: line_idx,
                 col: token_start,
             });
         }
     }
 
-    tokens
+    (tokens, selection_groups.len())
 }
 
 pub fn delete_prev_word(input: &str) -> String {
@@ -405,6 +450,35 @@ pub fn trim_wrapping_token<'a>(
     }
 }
 
+fn trim_token<'a>(token: &'a str, trimmable_chars: &str) -> &'a str {
+    let mut start = 0usize;
+    for (idx, ch) in token.char_indices() {
+        if is_leading_trimmable(ch, trimmable_chars) {
+            start = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let mut end = token.len();
+    while end > start {
+        let Some((idx, ch)) = token[..end].char_indices().last() else {
+            break;
+        };
+        if trimmable_chars.contains(ch) {
+            end = idx;
+        } else {
+            break;
+        }
+    }
+
+    if start >= end {
+        token
+    } else {
+        &token[start..end]
+    }
+}
+
 fn is_ascii_delimiter(ch: char, delimiters: &[bool; 256]) -> bool {
     ch.is_ascii() && delimiters[usize::from(ch as u8)]
 }
@@ -440,7 +514,77 @@ fn ascii_case_insensitive_eq_lower(left: &[u8], right_lower: &[u8]) -> bool {
     true
 }
 
-fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &str) {
+fn find_labeled_selection(selections: &[LabeledSelection<'_>], text: &str) -> Option<u8> {
+    selections
+        .iter()
+        .find(|selection| selection.text == text)
+        .map(|selection| selection.label)
+}
+
+fn trim_wrapping_token_ascii<'a>(
+    token: &'a str,
+    match_start: usize,
+    match_end: usize,
+    trimmable_chars: &[bool; 256],
+) -> &'a str {
+    let bytes = token.as_bytes();
+    let mut start = 0usize;
+    while start < match_start {
+        let byte = bytes[start];
+        if !byte.is_ascii() || byte == b'.' || !trimmable_chars[usize::from(byte)] {
+            break;
+        }
+        start += 1;
+    }
+
+    let mut end = bytes.len();
+    while end > match_end {
+        let byte = bytes[end - 1];
+        if !byte.is_ascii() || !trimmable_chars[usize::from(byte)] {
+            break;
+        }
+        end -= 1;
+    }
+
+    if start >= end {
+        token
+    } else {
+        &token[start..end]
+    }
+}
+
+fn ascii_trimmable_char_table(trimmable_chars: &str) -> Option<[bool; 256]> {
+    let mut table = [false; 256];
+    for ch in trimmable_chars.chars() {
+        if !ch.is_ascii() {
+            return None;
+        }
+        table[usize::from(ch as u8)] = true;
+    }
+    Some(table)
+}
+
+fn label_conflicts_outside_selection(token: &str, selection: &str, label: u8) -> bool {
+    if token.len() == selection.len() {
+        return false;
+    }
+
+    let selection_start = selection.as_ptr() as usize - token.as_ptr() as usize;
+    let selection_end = selection_start + selection.len();
+    token.as_bytes()[..selection_start]
+        .iter()
+        .chain(&token.as_bytes()[selection_end..])
+        .any(|byte| ascii_lower_byte(*byte) == label)
+}
+
+fn assign_labels(
+    matches: &mut [SearchMatch<'_>],
+    tokens: &[SearchToken<'_>],
+    selection_group_labels: &mut [Option<u8>],
+    query: &[u8],
+    label_chars: &str,
+    trimmable_chars: &str,
+) {
     let mut query_chars = [false; 256];
     let mut continuation_chars = [false; 256];
     let mut used_labels = [false; 256];
@@ -448,7 +592,11 @@ fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &st
     let mut candidates = [LabelCandidate { label: 0, lower: 0 }; 256];
     let mut candidates_len = 0usize;
     let mut used_candidates = 0usize;
-    let mut cached_token: Option<(*const u8, usize)> = None;
+    let mut token_chars_id: Option<(*const u8, usize)> = None;
+    let mut labeled_selections = [LabeledSelection { text: "", label: 0 }; 256];
+    let mut labeled_selections_len = 0usize;
+    let ascii_trimmable_chars = ascii_trimmable_char_table(trimmable_chars);
+    selection_group_labels.fill(None);
 
     for byte in query {
         query_chars[usize::from(*byte)] = true;
@@ -474,17 +622,42 @@ fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &st
 
     for m in matches.iter_mut() {
         m.label = None;
+        let token_id = (m.text.as_ptr(), m.text.len());
+        let token_index =
+            usize::try_from(m.token_index).expect("token index must fit in pointer width");
+        let token = &tokens[token_index];
+        let selection_start = token.selection.as_ptr() as usize - token.text.as_ptr() as usize;
+        let selection_end = selection_start + token.selection.len();
+        let uses_token_selection = m.match_start >= selection_start && m.match_end <= selection_end;
+        let selected = if uses_token_selection {
+            token.selection
+        } else if let Some(table) = &ascii_trimmable_chars {
+            trim_wrapping_token_ascii(m.text, m.match_start, m.match_end, table)
+        } else {
+            trim_wrapping_token(m.text, m.match_start, m.match_end, trimmable_chars)
+        };
+
+        let existing_label = if uses_token_selection {
+            selection_group_labels[token.selection_group]
+        } else {
+            find_labeled_selection(&labeled_selections[..labeled_selections_len], selected)
+        };
+        if let Some(label) = existing_label {
+            if !label_conflicts_outside_selection(m.text, selected, ascii_lower_byte(label)) {
+                m.label = Some(char::from(label));
+            }
+            continue;
+        }
         if used_candidates == candidates_len {
             continue;
         }
 
-        let token_id = (m.text.as_ptr(), m.text.len());
-        if cached_token != Some(token_id) {
+        if token_chars_id != Some(token_id) {
             token_chars.fill(false);
             for byte in m.text.bytes() {
                 token_chars[usize::from(ascii_lower_byte(byte))] = true;
             }
-            cached_token = Some(token_id);
+            token_chars_id = Some(token_id);
         }
 
         for candidate in &candidates[..candidates_len] {
@@ -497,6 +670,15 @@ fn assign_labels(matches: &mut [SearchMatch<'_>], query: &[u8], label_chars: &st
             m.label = Some(char::from(candidate.label));
             used_labels[usize::from(candidate.label)] = true;
             used_candidates += 1;
+            if uses_token_selection {
+                selection_group_labels[token.selection_group] = Some(candidate.label);
+            } else {
+                labeled_selections[labeled_selections_len] = LabeledSelection {
+                    text: selected,
+                    label: candidate.label,
+                };
+                labeled_selections_len += 1;
+            }
             break;
         }
     }
@@ -528,6 +710,12 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn search_match_size_remains_unchanged_with_token_index() {
+        assert_eq!(std::mem::size_of::<SearchMatch<'_>>(), 56);
     }
 
     #[test]
@@ -670,6 +858,38 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_reference_originating_tokens() {
+        let mut search = SearchInterface::new("alpha beta\nalphabet gamma", default_labels());
+        search.search("a");
+
+        for search_match in &search.matches {
+            let token_index =
+                usize::try_from(search_match.token_index).expect("token index should fit");
+            let token = &search.tokens[token_index];
+            assert_eq!(token.text.as_ptr(), search_match.text.as_ptr());
+            assert_eq!(token.text.len(), search_match.text.len());
+            assert_eq!(token.line, search_match.line);
+            assert_eq!(token.col, search_match.col);
+        }
+    }
+
+    #[test]
+    fn restored_matches_keep_originating_token_indices() {
+        let mut search = SearchInterface::new("alpha beta\nalphabet gamma", default_labels());
+        search.search("a");
+        search.search("al");
+        search.search("a");
+
+        for search_match in &search.matches {
+            let token_index =
+                usize::try_from(search_match.token_index).expect("token index should fit");
+            let token = &search.tokens[token_index];
+            assert_eq!(token.text.as_ptr(), search_match.text.as_ptr());
+            assert_eq!(token.text.len(), search_match.text.len());
+        }
+    }
+
+    #[test]
     fn search_does_not_emit_duplicate_matches() {
         let mut search = SearchInterface::new("abc abc abc", default_labels());
         let matches = search.search("a");
@@ -730,6 +950,7 @@ mod tests {
             assert_eq!(left.text, right.text);
             assert_eq!(left.line, right.line);
             assert_eq!(left.col, right.col);
+            assert_eq!(left.token_index, right.token_index);
             assert_eq!(left.match_start, right.match_start);
             assert_eq!(left.match_end, right.match_end);
             assert_eq!(left.label, right.label);
@@ -746,12 +967,32 @@ mod tests {
         let refined_matches: Vec<_> = refined
             .search("éa")
             .iter()
-            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .map(|m| {
+                (
+                    m.text,
+                    m.line,
+                    m.col,
+                    m.token_index,
+                    m.match_start,
+                    m.match_end,
+                    m.label,
+                )
+            })
             .collect();
         let fresh_matches: Vec<_> = fresh
             .search("éa")
             .iter()
-            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .map(|m| {
+                (
+                    m.text,
+                    m.line,
+                    m.col,
+                    m.token_index,
+                    m.match_start,
+                    m.match_end,
+                    m.label,
+                )
+            })
             .collect();
 
         assert_eq!(refined_matches, fresh_matches);
@@ -769,12 +1010,32 @@ mod tests {
         let restored_matches: Vec<_> = incremental
             .search("al")
             .iter()
-            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .map(|m| {
+                (
+                    m.text,
+                    m.line,
+                    m.col,
+                    m.token_index,
+                    m.match_start,
+                    m.match_end,
+                    m.label,
+                )
+            })
             .collect();
         let fresh_matches: Vec<_> = fresh
             .search("al")
             .iter()
-            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .map(|m| {
+                (
+                    m.text,
+                    m.line,
+                    m.col,
+                    m.token_index,
+                    m.match_start,
+                    m.match_end,
+                    m.label,
+                )
+            })
             .collect();
 
         assert_eq!(incremental.snapshots.len(), 2);
@@ -794,12 +1055,32 @@ mod tests {
         let restored_matches: Vec<_> = incremental
             .search(&shorter_query)
             .iter()
-            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .map(|m| {
+                (
+                    m.text,
+                    m.line,
+                    m.col,
+                    m.token_index,
+                    m.match_start,
+                    m.match_end,
+                    m.label,
+                )
+            })
             .collect();
         let fresh_matches: Vec<_> = fresh
             .search(&shorter_query)
             .iter()
-            .map(|m| (m.text, m.line, m.col, m.match_start, m.match_end, m.label))
+            .map(|m| {
+                (
+                    m.text,
+                    m.line,
+                    m.col,
+                    m.token_index,
+                    m.match_start,
+                    m.match_end,
+                    m.label,
+                )
+            })
             .collect();
 
         assert_eq!(incremental.snapshots.len(), 1);
@@ -858,7 +1139,7 @@ mod tests {
 
     #[test]
     fn uppercase_and_lowercase_configured_labels_are_distinct() {
-        let mut search = SearchInterface::new("x x", "aA".to_string());
+        let mut search = SearchInterface::new("x X", "aA".to_string());
         let labels: Vec<_> = search.search("x").iter().map(|m| m.label).collect();
 
         assert_eq!(labels, vec![Some('a'), Some('A')]);
@@ -866,10 +1147,92 @@ mod tests {
 
     #[test]
     fn duplicate_configured_labels_are_used_once() {
-        let mut search = SearchInterface::new("x x x", "aab".to_string());
+        let mut search = SearchInterface::new("x2 X x1", "aab".to_string());
         let labels: Vec<_> = search.search("x").iter().map(|m| m.label).collect();
 
         assert_eq!(labels, vec![Some('a'), Some('b'), None]);
+    }
+
+    #[test]
+    fn identical_trimmed_selections_reuse_label() {
+        let mut search = SearchInterface::new("foo (foo) foo,", default_labels());
+        let labels: Vec<_> = search.search("foo").iter().map(|m| m.label).collect();
+
+        assert_eq!(labels, vec![Some('j'), Some('j'), Some('j')]);
+    }
+
+    #[test]
+    fn selection_grouping_is_case_sensitive() {
+        let mut search = SearchInterface::new("foo FOO", default_labels());
+        let labels: Vec<_> = search.search("foo").iter().map(|m| m.label).collect();
+
+        assert_eq!(labels, vec![Some('j'), Some('k')]);
+    }
+
+    #[test]
+    fn different_trimmed_outputs_do_not_share_label() {
+        let mut search = SearchInterface::new("((x))", default_labels());
+        let matches = search.search("(");
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(
+            trim_wrapping_token(
+                matches[0].text,
+                matches[0].match_start,
+                matches[0].match_end,
+                &default_trimmable(),
+            ),
+            "(x"
+        );
+        assert_eq!(
+            trim_wrapping_token(
+                matches[1].text,
+                matches[1].match_start,
+                matches[1].match_end,
+                &default_trimmable(),
+            ),
+            "((x"
+        );
+        assert_eq!(matches[0].label, Some('j'));
+        assert_eq!(matches[1].label, Some('k'));
+    }
+
+    #[test]
+    fn duplicate_reuses_label_after_candidate_exhaustion() {
+        let mut search = SearchInterface::new("foo foo", "j".to_string());
+        let labels: Vec<_> = search.search("foo").iter().map(|m| m.label).collect();
+
+        assert_eq!(labels, vec![Some('j'), Some('j')]);
+    }
+
+    #[test]
+    fn shared_label_conflict_leaves_occurrence_unlabeled() {
+        let mut search =
+            SearchInterface::new_with_trimmable_chars("jfoo foo", "j".to_string(), "j".to_string());
+        let labels: Vec<_> = search.search("foo").iter().map(|m| m.label).collect();
+
+        assert_eq!(labels, vec![Some('j'), None]);
+    }
+
+    #[test]
+    fn label_lookup_returns_first_shared_match() {
+        let mut search = SearchInterface::new("foo foo", default_labels());
+        search.search("foo");
+
+        let found = search
+            .get_match_by_label('j')
+            .expect("expected shared label to resolve");
+
+        assert_eq!(found.col, 4);
+        assert_eq!(
+            trim_wrapping_token(
+                found.text,
+                found.match_start,
+                found.match_end,
+                &default_trimmable(),
+            ),
+            "foo"
+        );
     }
 
     #[test]
