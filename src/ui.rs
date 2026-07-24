@@ -584,6 +584,7 @@ mod tests {
             line,
             col,
             label: lbl,
+            token_index: 0,
             match_start,
             match_end,
         }
