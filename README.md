@@ -65,6 +65,10 @@ bind-key F run-shell "flash_tmux"
   match is inside those wrappers, the outer wrapper is stripped before
   copying/pasting.
   - Example: `(/home/user/project)` → `/home/user/project`
+- Matches that would copy or paste exactly the same text share a label.
+  - Example: `foo`, `(foo)`, and `"foo"` may share a label because the
+    surrounding wrappers are stripped.
+  - Grouping is case-sensitive, so `foo` and `Foo` use different labels.
 
 ## Benchmarks
 
@@ -83,7 +87,7 @@ Expected checksum output:
 ```text
 1787
 4278
-6728401868494091241
+5838609766282676217
 ```
 
 Run Rust-only benchmarks with `hyperfine`:
