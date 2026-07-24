@@ -10,8 +10,8 @@ keywords = ["cli", "tmux"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-anyhow = "1.0.102"
-clap = { version = "4.6.1", features = ["derive"] }
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
 crossterm = "0.29.0"
 unicode-width = "0.2.2"
 
