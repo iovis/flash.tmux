@@ -73,7 +73,7 @@ bind-key F run-shell "flash_tmux"
 ## Benchmarks
 
 Standalone benchmark binaries live in `src/bin/` (on the `bench` branch) and
-are intended for comparison with the C and Go sibling implementations.
+are intended for comparison with the C and Odin sibling implementations.
 
 Build release binaries and verify checksum parity:
 

@@ -18,6 +18,7 @@ Context for this repo:
 
 - Search tokens are whitespace-delimited; match is case-insensitive.
 - Labels are lowercase only; typing lowercase label auto-pastes, uppercase copies only.
+- Matches that resolve to the same case-sensitive text share a label.
 - Enter/Space pick the first match; Ctrl-C/Ctrl-D/Esc cancel.
 - Output text trims leading/trailing wrapper chars and punctuation ((), [], {}, quotes, backticks, commas, periods, colons, semicolons) but never trims through the match span.
 
@@ -46,7 +47,7 @@ Context for this repo:
 - Benchmark fixture: `./flash-bench-content.txt`.
 - Build release app and benchmark binaries with `just release`.
 - Verify benchmark checksum parity with `just checksums`.
-  - Expected outputs: `1787`, `4278`, `6728401868494091241`.
+  - Expected outputs: `1787`, `4278`, `5838609766282676217`.
 - Run Rust-only hyperfine benchmarks with:
   - `just bench-search`
   - `just bench-incremental`
