@@ -102,7 +102,22 @@ impl<'a> SearchInterface<'a> {
         label_chars: String,
         trimmable_chars: String,
     ) -> Self {
-        let lines: Vec<&str> = pane_content.split('\n').collect();
+        Self::new_with_trimmable_chars_and_line_capacity(
+            pane_content,
+            label_chars,
+            trimmable_chars,
+            0,
+        )
+    }
+
+    pub fn new_with_trimmable_chars_and_line_capacity(
+        pane_content: &'a str,
+        label_chars: String,
+        trimmable_chars: String,
+        line_capacity: usize,
+    ) -> Self {
+        let mut lines = Vec::with_capacity(line_capacity);
+        lines.extend(pane_content.split('\n'));
         let (tokens, selection_group_count) = build_tokens(&lines, &trimmable_chars);
         let line_match_ranges = vec![(0, 0); lines.len()];
         Self {

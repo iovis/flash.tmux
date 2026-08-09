@@ -16,6 +16,7 @@ pub struct InteractiveUI<'a> {
     render_scratch: RenderScratch,
     search_query: String,
     cursor_pos: usize,
+    available_height: usize,
 }
 
 pub struct SelectedText {
@@ -34,10 +35,15 @@ impl SelectedText {
 
 impl<'a> InteractiveUI<'a> {
     pub fn new(pane_content: &'a str, config: Config) -> Self {
+        let (_, terminal_height) = terminal::size().unwrap_or((80, 40));
         let label_chars = config.label_characters.clone();
         let trimmable_chars = config.trimmable_chars.clone();
-        let search =
-            SearchInterface::new_with_trimmable_chars(pane_content, label_chars, trimmable_chars);
+        let search = SearchInterface::new_with_trimmable_chars_and_line_capacity(
+            pane_content,
+            label_chars,
+            trimmable_chars,
+            usize::from(terminal_height).saturating_add(1),
+        );
 
         Self {
             config,
@@ -45,6 +51,7 @@ impl<'a> InteractiveUI<'a> {
             render_scratch: RenderScratch::new(),
             search_query: String::new(),
             cursor_pos: 0,
+            available_height: Self::visible_line_limit(terminal_height),
         }
     }
 
@@ -56,7 +63,10 @@ impl<'a> InteractiveUI<'a> {
         loop {
             match crossterm::event::read()? {
                 Event::Key(key) if matches!(key.kind, KeyEventKind::Release) => {}
-                Event::Resize(_, _) => self.display_content()?,
+                Event::Resize(_, height) => {
+                    self.available_height = Self::visible_line_limit(height);
+                    self.display_content()?;
+                }
                 Event::Key(key) => {
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                     match (key.code, ctrl) {
@@ -98,7 +108,7 @@ impl<'a> InteractiveUI<'a> {
                             self.update_search(new_query)?;
                         }
                         (KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab, false) => {
-                            let max_lines = Self::visible_line_limit();
+                            let max_lines = self.available_height;
                             if let Some(first) = self.search.first_visible_match(max_lines) {
                                 let text = trim_wrapping_token(
                                     first.text,
@@ -154,7 +164,7 @@ impl<'a> InteractiveUI<'a> {
 
     fn display_content(&mut self) -> Result<()> {
         let mut out = io::stderr();
-        let available_height = Self::visible_line_limit();
+        let available_height = self.available_height;
 
         out.sync_update(|out| -> io::Result<()> {
             out.queue(Hide)?;
@@ -175,15 +185,14 @@ impl<'a> InteractiveUI<'a> {
 
     fn move_prompt_cursor_only(&self) -> Result<()> {
         let mut out = io::stderr();
-        let prompt_row = Self::prompt_row(Self::visible_line_limit());
+        let prompt_row = Self::prompt_row(self.available_height);
         let cursor_col = self.prompt_cursor_move_column();
         Self::write_prompt_cursor(&mut out, prompt_row, cursor_col)?;
         Ok(())
     }
 
-    fn visible_line_limit() -> usize {
-        let (_, height) = terminal::size().unwrap_or((80, 40));
-        (height as usize).saturating_sub(1)
+    fn visible_line_limit(height: u16) -> usize {
+        usize::from(height).saturating_sub(1)
     }
 
     fn prompt_row(available_height: usize) -> u16 {
@@ -921,6 +930,7 @@ mod tests {
             render_scratch: RenderScratch::new(),
             search_query: String::new(),
             cursor_pos: 0,
+            available_height: 39,
             config: c.clone(),
         };
 
@@ -941,6 +951,7 @@ mod tests {
             render_scratch: RenderScratch::new(),
             search_query: "hello".to_string(),
             cursor_pos: 5,
+            available_height: 39,
             config: c.clone(),
         };
 
@@ -957,6 +968,7 @@ mod tests {
             render_scratch: RenderScratch::new(),
             search_query: String::new(),
             cursor_pos: 0,
+            available_height: 39,
             config: c,
         };
         let mut out = Vec::new();
@@ -1034,6 +1046,7 @@ mod tests {
             render_scratch: RenderScratch::new(),
             search_query: "hello".to_string(),
             cursor_pos: 2,
+            available_height: 39,
             config: c.clone(),
         };
 
