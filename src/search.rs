@@ -295,7 +295,12 @@ impl<'a> SearchInterface<'a> {
 }
 
 fn build_tokens<'a>(lines: &[&'a str], trimmable_chars: &str) -> (Vec<SearchToken<'a>>, usize) {
-    let mut selection_groups = std::collections::HashMap::new();
+    let token_count = lines
+        .iter()
+        .map(|line| line.split_ascii_whitespace().count())
+        .sum();
+    let mut selection_groups =
+        rustc_hash::FxHashMap::with_capacity_and_hasher(token_count, rustc_hash::FxBuildHasher);
     let mut tokens = Vec::new();
 
     for (line_idx, line) in lines.iter().copied().enumerate() {
