@@ -38,6 +38,7 @@ struct QueryByteMatcher {
 
 const ASCII_LOWER_BYTES: [u8; 256] = build_ascii_lower_bytes();
 const QUERY_STACK_CAPACITY: usize = 256;
+const ESTIMATED_BYTES_PER_TOKEN: usize = 8;
 
 const fn build_ascii_lower_bytes() -> [u8; 256] {
     let mut bytes = [0; 256];
@@ -295,13 +296,13 @@ impl<'a> SearchInterface<'a> {
 }
 
 fn build_tokens<'a>(lines: &[&'a str], trimmable_chars: &str) -> (Vec<SearchToken<'a>>, usize) {
-    let token_count = lines
-        .iter()
-        .map(|line| line.split_ascii_whitespace().count())
-        .sum();
+    let content_bytes = lines.iter().map(|line| line.len()).sum::<usize>();
+    let token_capacity = content_bytes
+        .div_ceil(ESTIMATED_BYTES_PER_TOKEN)
+        .max(lines.len());
     let mut selection_groups =
-        rustc_hash::FxHashMap::with_capacity_and_hasher(token_count, rustc_hash::FxBuildHasher);
-    let mut tokens = Vec::with_capacity(token_count);
+        rustc_hash::FxHashMap::with_capacity_and_hasher(token_capacity, rustc_hash::FxBuildHasher);
+    let mut tokens = Vec::with_capacity(token_capacity);
     let ascii_trimmable_chars = ascii_trimmable_char_table(trimmable_chars);
 
     for (line_idx, line) in lines.iter().copied().enumerate() {
