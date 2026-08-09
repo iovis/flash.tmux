@@ -124,16 +124,16 @@ fn apply_selection(pane_id: &str, in_copy_mode: bool, selection: &SelectedText) 
         return;
     }
 
-    if in_copy_mode && selection.action.should_paste() {
-        tmux::exit_copy_mode(pane_id);
+    if selection.action.should_paste() {
+        tmux::Clipboard::copy_and_paste(
+            &selection.text,
+            pane_id,
+            in_copy_mode,
+            selection.action.forward_key(),
+        );
+    } else {
+        tmux::Clipboard::copy(&selection.text);
     }
-
-    tmux::Clipboard::copy_and_paste(
-        &selection.text,
-        pane_id,
-        selection.action.should_paste(),
-        selection.action.forward_key(),
-    );
 }
 
 impl Cli {

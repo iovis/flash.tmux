@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use std::borrow::Cow;
 use std::process::Command;
 
 const EXIT_CODE_PASTE: i32 = 10;
@@ -175,10 +176,6 @@ pub fn calculate_popup_position(dimensions: &PaneDimensions) -> (i32, i32, i32, 
     (dimensions.left, y, dimensions.width, dimensions.height)
 }
 
-pub fn exit_copy_mode(pane_id: &str) {
-    tmux_run_quiet(&["copy-mode", "-q", "-t", pane_id]);
-}
-
 fn tmux_output_trim(args: &[&str], trim: TrimMode) -> Result<String> {
     let output = Command::new("tmux").args(args).output()?;
     if !output.status.success() {
@@ -205,16 +202,12 @@ pub struct Clipboard;
 
 impl Clipboard {
     pub fn copy(text: &str) -> bool {
-        if tmux_run_quiet(&["set-buffer", "-w", "--", text]) {
+        let text = escape_tmux_data(text);
+        if tmux_run_quiet(&["set-buffer", "-w", "--", &text]) {
             return true;
         }
 
-        let _ = Command::new("tmux")
-            .args([
-                "display-message",
-                "flash.tmux: failed to copy to clipboard (OSC52)",
-            ])
-            .status();
+        display_tmux_error("flash.tmux: failed to copy to clipboard (OSC52)");
 
         false
     }
@@ -222,37 +215,75 @@ impl Clipboard {
     pub fn copy_and_paste(
         text: &str,
         pane_id: &str,
-        auto_paste: bool,
+        exit_copy_mode: bool,
         forward_key: Option<ForwardKey>,
     ) {
-        if !Self::copy(text) {
-            return;
-        }
+        let text = escape_tmux_data(text);
+        let args = copy_and_paste_args(&text, pane_id, exit_copy_mode, forward_key);
 
-        if auto_paste {
-            let _ = write_buffer("flash-paste", text);
-            let _ = paste_buffer("flash-paste", pane_id);
-            if let Some(key) = forward_key {
-                let _ = send_keys(pane_id, key);
-            }
+        if !tmux_run_quiet(&args) {
+            display_tmux_error("flash.tmux: failed to copy or paste selection");
         }
     }
 }
 
-fn write_buffer(buffer_name: &str, text: &str) -> bool {
-    tmux_run_quiet(&["set-buffer", "-b", buffer_name, "--", text])
+fn copy_and_paste_args<'a>(
+    text: &'a str,
+    pane_id: &'a str,
+    exit_copy_mode: bool,
+    forward_key: Option<ForwardKey>,
+) -> Vec<&'a str> {
+    let mut args = Vec::with_capacity(26);
+
+    if exit_copy_mode {
+        args.extend_from_slice(&["copy-mode", "-q", "-t", pane_id, ";"]);
+    }
+
+    args.extend_from_slice(&[
+        "set-buffer",
+        "-w",
+        "--",
+        text,
+        ";",
+        "set-buffer",
+        "-b",
+        "flash-paste",
+        "--",
+        text,
+        ";",
+        "paste-buffer",
+        "-b",
+        "flash-paste",
+        "-t",
+        pane_id,
+    ]);
+
+    if let Some(key) = forward_key {
+        let key_name = match key {
+            ForwardKey::Enter => "Enter",
+            ForwardKey::Space => "Space",
+        };
+        args.extend_from_slice(&[";", "send-keys", "-t", pane_id, key_name]);
+    }
+
+    args
 }
 
-fn paste_buffer(buffer_name: &str, pane_id: &str) -> bool {
-    tmux_run_quiet(&["paste-buffer", "-b", buffer_name, "-t", pane_id])
-}
-
-fn send_keys(pane_id: &str, key: ForwardKey) -> bool {
-    let key_name = match key {
-        ForwardKey::Enter => "Enter",
-        ForwardKey::Space => "Space",
+fn escape_tmux_data(text: &str) -> Cow<'_, str> {
+    let Some(prefix) = text.strip_suffix(';') else {
+        return Cow::Borrowed(text);
     };
-    tmux_run_quiet(&["send-keys", "-t", pane_id, key_name])
+
+    let mut escaped = String::with_capacity(text.len() + 1);
+    escaped.push_str(prefix);
+    escaped.push_str("\\;");
+    Cow::Owned(escaped)
+}
+
+fn display_tmux_error(message: &str) {
+    let _ = Command::new("tmux")
+        .args(["display-message", message])
+        .status();
 }
 
 #[cfg(test)]
@@ -347,5 +378,69 @@ mod tests {
     fn parse_current_pane_info_rejects_malformed_output() {
         assert!(parse_current_pane_info("%1\tcopy-mode").is_none());
         assert!(parse_current_pane_info("%1\t\t\t24\t0\t0\t79\t23\t80\textra").is_none());
+    }
+
+    #[test]
+    fn tmux_data_escapes_only_a_trailing_semicolon() {
+        assert_eq!(escape_tmux_data("alpha;beta"), "alpha;beta");
+        assert_eq!(escape_tmux_data("alpha;"), "alpha\\;");
+        assert_eq!(escape_tmux_data(";"), "\\;");
+        assert_eq!(escape_tmux_data(r"alpha\;"), r"alpha\\;");
+    }
+
+    #[test]
+    fn copy_and_paste_commands_are_batched_in_order() {
+        assert_eq!(
+            copy_and_paste_args("selection", "%1", false, None),
+            [
+                "set-buffer",
+                "-w",
+                "--",
+                "selection",
+                ";",
+                "set-buffer",
+                "-b",
+                "flash-paste",
+                "--",
+                "selection",
+                ";",
+                "paste-buffer",
+                "-b",
+                "flash-paste",
+                "-t",
+                "%1",
+            ]
+        );
+        assert_eq!(
+            copy_and_paste_args("selection", "%1", true, Some(ForwardKey::Enter)),
+            [
+                "copy-mode",
+                "-q",
+                "-t",
+                "%1",
+                ";",
+                "set-buffer",
+                "-w",
+                "--",
+                "selection",
+                ";",
+                "set-buffer",
+                "-b",
+                "flash-paste",
+                "--",
+                "selection",
+                ";",
+                "paste-buffer",
+                "-b",
+                "flash-paste",
+                "-t",
+                "%1",
+                ";",
+                "send-keys",
+                "-t",
+                "%1",
+                "Enter",
+            ]
+        );
     }
 }
