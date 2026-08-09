@@ -301,7 +301,8 @@ fn build_tokens<'a>(lines: &[&'a str], trimmable_chars: &str) -> (Vec<SearchToke
         .sum();
     let mut selection_groups =
         rustc_hash::FxHashMap::with_capacity_and_hasher(token_count, rustc_hash::FxBuildHasher);
-    let mut tokens = Vec::new();
+    let mut tokens = Vec::with_capacity(token_count);
+    let ascii_trimmable_chars = ascii_trimmable_char_table(trimmable_chars);
 
     for (line_idx, line) in lines.iter().copied().enumerate() {
         let line_bytes = line.as_bytes();
@@ -321,7 +322,11 @@ fn build_tokens<'a>(lines: &[&'a str], trimmable_chars: &str) -> (Vec<SearchToke
             }
 
             let text = &line[token_start..idx];
-            let selection = trim_token(text, trimmable_chars);
+            let selection = if let Some(table) = &ascii_trimmable_chars {
+                trim_token_ascii(text, table)
+            } else {
+                trim_token(text, trimmable_chars)
+            };
             let next_group = selection_groups.len();
             let selection_group = *selection_groups.entry(selection).or_insert(next_group);
             tokens.push(SearchToken {
@@ -425,6 +430,33 @@ fn trim_token<'a>(token: &'a str, trimmable_chars: &str) -> &'a str {
         } else {
             break;
         }
+    }
+
+    if start >= end {
+        token
+    } else {
+        &token[start..end]
+    }
+}
+
+fn trim_token_ascii<'a>(token: &'a str, trimmable_chars: &[bool; 256]) -> &'a str {
+    let bytes = token.as_bytes();
+    let mut start = 0usize;
+    while start < bytes.len() {
+        let byte = bytes[start];
+        if !byte.is_ascii() || byte == b'.' || !trimmable_chars[usize::from(byte)] {
+            break;
+        }
+        start += 1;
+    }
+
+    let mut end = bytes.len();
+    while end > start {
+        let byte = bytes[end - 1];
+        if !byte.is_ascii() || !trimmable_chars[usize::from(byte)] {
+            break;
+        }
+        end -= 1;
     }
 
     if start >= end {
@@ -1286,6 +1318,35 @@ mod tests {
         assert!(!matches.is_empty());
         assert_eq!(search.lines, vec!["alpha beta", "gamma"]);
         assert_eq!(search.tokens.len(), 3);
+    }
+
+    #[test]
+    fn ascii_token_trimming_matches_general_trimming() {
+        let trimmable_chars = default_trimmable();
+        let table = ascii_trimmable_char_table(&trimmable_chars).unwrap();
+
+        for token in [
+            "foo",
+            "(foo)",
+            "(`foo`)",
+            ".gitignore",
+            "foo...",
+            "()",
+            "(é)",
+        ] {
+            assert_eq!(
+                trim_token_ascii(token, &table),
+                trim_token(token, &trimmable_chars)
+            );
+        }
+    }
+
+    #[test]
+    fn token_building_supports_non_ascii_trimmable_characters() {
+        let lines = ["§foo§"];
+        let (tokens, _) = build_tokens(&lines, "§");
+
+        assert_eq!(tokens[0].selection, "foo");
     }
 
     #[test]
