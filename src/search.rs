@@ -18,12 +18,6 @@ struct SearchToken<'a> {
     col: usize,
 }
 
-#[derive(Debug)]
-struct SearchSnapshot<'a> {
-    query: String,
-    matches: Vec<SearchMatch<'a>>,
-}
-
 #[derive(Clone, Copy)]
 struct LabelCandidate {
     label: u8,
@@ -85,7 +79,6 @@ pub struct SearchInterface<'a> {
     pub lines: Vec<&'a str>,
     tokens: Vec<SearchToken<'a>>,
     matches: Vec<SearchMatch<'a>>,
-    snapshots: Vec<SearchSnapshot<'a>>,
     line_match_ranges: Vec<(usize, usize)>,
     label_match_indices: [Option<usize>; 256],
     selection_group_labels: Vec<Option<u8>>,
@@ -115,7 +108,6 @@ impl<'a> SearchInterface<'a> {
             lines,
             tokens,
             matches: Vec::new(),
-            snapshots: Vec::new(),
             line_match_ranges,
             label_match_indices: [None; 256],
             selection_group_labels: vec![None; selection_group_count],
@@ -131,7 +123,6 @@ impl<'a> SearchInterface<'a> {
             self.clear_line_match_ranges();
             self.clear_label_match_indices();
             self.last_query.clear();
-            self.snapshots.clear();
             return &self.matches;
         }
 
@@ -155,14 +146,8 @@ impl<'a> SearchInterface<'a> {
         let query_len = query_bytes.len();
 
         if !previous_query.is_empty() && query_bytes.starts_with(previous_query) {
-            if query_len > previous_query_len {
-                self.store_snapshot(previous_query);
-            }
             self.refine_matches(query_bytes, previous_query_len);
-        } else if previous_query.starts_with(query_bytes) && self.restore_snapshot(query_bytes) {
-            // Snapshot restored; labels and line ranges are rebuilt below.
         } else {
-            self.snapshots.clear();
             self.matches.clear();
             self.scan_matches(query_bytes, query_len);
         }
@@ -180,41 +165,6 @@ impl<'a> SearchInterface<'a> {
         self.last_query = query_cmp;
 
         &self.matches
-    }
-
-    fn store_snapshot(&mut self, query: &[u8]) {
-        if query.is_empty() {
-            return;
-        }
-
-        if let Some(snapshot) = self
-            .snapshots
-            .iter_mut()
-            .find(|snapshot| snapshot.query.as_bytes() == query)
-        {
-            snapshot.matches.clone_from(&self.matches);
-            return;
-        }
-
-        let query = std::str::from_utf8(query)
-            .expect("the previous normalized query must remain valid UTF-8");
-        self.snapshots.push(SearchSnapshot {
-            query: query.to_owned(),
-            matches: self.matches.clone(),
-        });
-    }
-
-    fn restore_snapshot(&mut self, query: &[u8]) -> bool {
-        let Some(snapshot) = self
-            .snapshots
-            .iter()
-            .find(|snapshot| snapshot.query.as_bytes() == query)
-        else {
-            return false;
-        };
-
-        self.matches.clone_from(&snapshot.matches);
-        true
     }
 
     pub fn get_match_by_label(&self, label: char) -> Option<&SearchMatch<'a>> {
@@ -697,6 +647,25 @@ mod tests {
         Config::defaults().trimmable_chars
     }
 
+    fn match_signatures<'a>(
+        matches: &[SearchMatch<'a>],
+    ) -> Vec<(&'a str, usize, usize, u32, usize, usize, Option<char>)> {
+        matches
+            .iter()
+            .map(|m| {
+                (
+                    m.text,
+                    m.line,
+                    m.col,
+                    m.token_index,
+                    m.match_start,
+                    m.match_end,
+                    m.label,
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn query_byte_matcher_matches_ascii_lower_equivalence() {
         for query_byte in 0u8..=u8::MAX {
@@ -874,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_matches_keep_originating_token_indices() {
+    fn rescanned_matches_keep_originating_token_indices() {
         let mut search = SearchInterface::new("alpha beta\nalphabet gamma", default_labels());
         search.search("a");
         search.search("al");
@@ -999,7 +968,7 @@ mod tests {
     }
 
     #[test]
-    fn search_restores_snapshot_when_query_shrinks_to_previous_prefix() {
+    fn search_rescans_when_query_shrinks_to_previous_prefix() {
         let pane = "alpha alphabet alphanumeric\nbeta alphabet";
         let mut incremental = SearchInterface::new(pane, default_labels());
         let mut fresh = SearchInterface::new(pane, default_labels());
@@ -1007,43 +976,14 @@ mod tests {
         incremental.search("a");
         incremental.search("al");
         incremental.search("alp");
-        let restored_matches: Vec<_> = incremental
-            .search("al")
-            .iter()
-            .map(|m| {
-                (
-                    m.text,
-                    m.line,
-                    m.col,
-                    m.token_index,
-                    m.match_start,
-                    m.match_end,
-                    m.label,
-                )
-            })
-            .collect();
-        let fresh_matches: Vec<_> = fresh
-            .search("al")
-            .iter()
-            .map(|m| {
-                (
-                    m.text,
-                    m.line,
-                    m.col,
-                    m.token_index,
-                    m.match_start,
-                    m.match_end,
-                    m.label,
-                )
-            })
-            .collect();
-
-        assert_eq!(incremental.snapshots.len(), 2);
-        assert_eq!(restored_matches, fresh_matches);
+        assert_eq!(
+            match_signatures(incremental.search("al")),
+            match_signatures(fresh.search("al"))
+        );
     }
 
     #[test]
-    fn search_restores_snapshot_for_long_query() {
+    fn search_rescans_for_long_query() {
         let shorter_query = "A".repeat(256);
         let longer_query = format!("{shorter_query}B");
         let pane = longer_query.to_ascii_lowercase();
@@ -1052,39 +992,88 @@ mod tests {
 
         incremental.search(&shorter_query);
         incremental.search(&longer_query);
-        let restored_matches: Vec<_> = incremental
-            .search(&shorter_query)
-            .iter()
-            .map(|m| {
-                (
-                    m.text,
-                    m.line,
-                    m.col,
-                    m.token_index,
-                    m.match_start,
-                    m.match_end,
-                    m.label,
-                )
-            })
-            .collect();
-        let fresh_matches: Vec<_> = fresh
-            .search(&shorter_query)
-            .iter()
-            .map(|m| {
-                (
-                    m.text,
-                    m.line,
-                    m.col,
-                    m.token_index,
-                    m.match_start,
-                    m.match_end,
-                    m.label,
-                )
-            })
-            .collect();
+        assert_eq!(
+            match_signatures(incremental.search(&shorter_query)),
+            match_signatures(fresh.search(&shorter_query))
+        );
+    }
 
-        assert_eq!(incremental.snapshots.len(), 1);
-        assert_eq!(restored_matches, fresh_matches);
+    #[test]
+    fn search_backspace_recovers_matches_from_empty_set() {
+        let pane = "zzz zzzzz alpha";
+        let mut incremental = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        assert!(incremental.search("zzzzzz").is_empty());
+        assert_eq!(
+            match_signatures(incremental.search("zzz")),
+            match_signatures(fresh.search("zzz"))
+        );
+    }
+
+    #[test]
+    fn search_backspace_with_utf8_matches_fresh_scan() {
+        let pane = "é éa café";
+        let mut incremental = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        incremental.search("éa");
+        let rescanned = incremental.search("é");
+        assert!(
+            rescanned
+                .iter()
+                .all(|m| m.text.is_char_boundary(m.match_end))
+        );
+        assert_eq!(
+            match_signatures(rescanned),
+            match_signatures(fresh.search("é"))
+        );
+    }
+
+    #[test]
+    fn search_interior_edit_discovers_shifted_match() {
+        let pane = "slash flash";
+        let mut edited = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        edited.search("lash");
+        assert_eq!(
+            match_signatures(edited.search("slash")),
+            match_signatures(fresh.search("slash"))
+        );
+    }
+
+    #[test]
+    fn search_results_do_not_depend_on_backspace_history() {
+        let pane = "alpha alphabet alphanumeric";
+        let mut edited = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        edited.search("a");
+        edited.search("al");
+        edited.search("a");
+        assert_eq!(
+            match_signatures(edited.search("al")),
+            match_signatures(fresh.search("al"))
+        );
+    }
+
+    #[test]
+    fn backspace_rebuilds_label_lookup_like_fresh_scan() {
+        let pane = "alpha alphabet alphanumeric";
+        let mut edited = SearchInterface::new(pane, default_labels());
+        let mut fresh = SearchInterface::new(pane, default_labels());
+
+        edited.search("alp");
+        let edited_labels: Vec<_> = edited.search("al").iter().filter_map(|m| m.label).collect();
+        fresh.search("al");
+
+        for label in edited_labels {
+            assert_eq!(
+                edited.get_match_by_label(label).map(|m| m.text),
+                fresh.get_match_by_label(label).map(|m| m.text)
+            );
+        }
     }
 
     #[test]
