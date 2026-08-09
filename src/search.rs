@@ -39,6 +39,7 @@ struct QueryByteMatcher {
 const ASCII_LOWER_BYTES: [u8; 256] = build_ascii_lower_bytes();
 const QUERY_STACK_CAPACITY: usize = 256;
 const ESTIMATED_BYTES_PER_TOKEN: usize = 8;
+const MEMCHR_CANDIDATE_THRESHOLD: usize = 40;
 
 const fn build_ascii_lower_bytes() -> [u8; 256] {
     let mut bytes = [0; 256];
@@ -244,6 +245,7 @@ impl<'a> SearchInterface<'a> {
 
     fn scan_matches(&mut self, query_bytes: &[u8], query_len: usize) {
         let first_query_byte = QueryByteMatcher::new(query_bytes[0]);
+        let matches = &mut self.matches;
 
         for (token_index, token) in self.tokens.iter().enumerate().rev() {
             let token_bytes = token.text.as_bytes();
@@ -251,42 +253,35 @@ impl<'a> SearchInterface<'a> {
                 continue;
             }
 
-            let mut match_pos = token_bytes.len() - query_len + 1;
-            while match_pos > 0 {
-                match_pos -= 1;
-
-                if !first_query_byte.matches(token_bytes[match_pos]) {
-                    continue;
-                }
-
-                if query_len > 1
-                    && !ascii_case_insensitive_eq_lower(
-                        &token_bytes[match_pos + 1..match_pos + query_len],
-                        &query_bytes[1..],
-                    )
-                {
-                    continue;
-                }
-
-                if !is_utf8_boundary(token_bytes, match_pos)
-                    || !is_utf8_boundary(token_bytes, match_pos + query_len)
-                {
-                    continue;
-                }
-
-                let token_index = u32::try_from(token_index)
-                    .expect("pane content contains too many search tokens");
-                let candidate = SearchMatch {
-                    text: token.text,
-                    line: token.line,
-                    col: token.col,
-                    label: None,
-                    token_index,
-                    match_start: match_pos,
-                    match_end: match_pos + query_len,
-                };
-                self.matches.push(candidate);
-            }
+            let candidate_count = token_bytes.len() - query_len + 1;
+            visit_candidate_positions(
+                token_bytes,
+                candidate_count,
+                first_query_byte,
+                |match_pos| {
+                    let remainder_matches = query_len == 1
+                        || ascii_case_insensitive_eq_lower(
+                            &token_bytes[match_pos + 1..match_pos + query_len],
+                            &query_bytes[1..],
+                        );
+                    if remainder_matches
+                        && is_utf8_boundary(token_bytes, match_pos)
+                        && is_utf8_boundary(token_bytes, match_pos + query_len)
+                    {
+                        let token_index = u32::try_from(token_index)
+                            .expect("pane content contains too many search tokens");
+                        matches.push(SearchMatch {
+                            text: token.text,
+                            line: token.line,
+                            col: token.col,
+                            label: None,
+                            token_index,
+                            match_start: match_pos,
+                            match_end: match_pos + query_len,
+                        });
+                    }
+                },
+            );
         }
     }
 
@@ -306,6 +301,32 @@ impl<'a> SearchInterface<'a> {
 
         for candidate in &mut self.matches {
             candidate.match_end = candidate.match_start + query_bytes.len();
+        }
+    }
+}
+
+fn visit_candidate_positions(
+    token_bytes: &[u8],
+    candidate_count: usize,
+    first_query_byte: QueryByteMatcher,
+    mut visit: impl FnMut(usize),
+) {
+    if candidate_count >= MEMCHR_CANDIDATE_THRESHOLD {
+        for match_pos in memchr::memrchr2_iter(
+            first_query_byte.lower,
+            first_query_byte.upper,
+            &token_bytes[..candidate_count],
+        ) {
+            visit(match_pos);
+        }
+        return;
+    }
+
+    let mut match_pos = candidate_count;
+    while match_pos > 0 {
+        match_pos -= 1;
+        if first_query_byte.matches(token_bytes[match_pos]) {
+            visit(match_pos);
         }
     }
 }
@@ -877,6 +898,17 @@ mod tests {
         let starts: Vec<_> = matches.iter().map(|m| m.match_start).collect();
 
         assert_eq!(starts, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn search_at_memchr_threshold_preserves_reverse_overlapping_order() {
+        let pane = "a".repeat(MEMCHR_CANDIDATE_THRESHOLD + 1);
+        let mut search = SearchInterface::new(&pane, default_labels());
+        let matches = search.search("AA");
+        let starts: Vec<_> = matches.iter().map(|m| m.match_start).collect();
+        let expected: Vec<_> = (0..MEMCHR_CANDIDATE_THRESHOLD).rev().collect();
+
+        assert_eq!(starts, expected);
     }
 
     #[test]
